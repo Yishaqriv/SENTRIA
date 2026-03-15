@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="10">
+    <title>SENTRIA Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            margin: 0;
+            padding: 0;
+        }
+
+        h1 {
+            text-align: center;
+            margin-top: 30px;
+            margin-bottom: 20px;
+            font-size: 48px;
+        }
+
+        .button-container {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .update-button {
+            display: inline-block;
+            padding: 12px 24px;
+            background: #1e293b;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            border: 1px solid #475569;
+        }
+
+        .update-button:hover {
+            background: #334155;
+        }
+
+        table {
+            width: 90%;
+            margin: auto;
+            border-collapse: collapse;
+            background: #0b1324;
+        }
+
+        th, td {
+            padding: 12px;
+            border: 1px solid #444;
+            text-align: center;
+        }
+
+        th {
+            background: #1e293b;
+        }
+
+        tr:nth-child(even) {
+            background: #111c33;
+        }
+
+        .empty-message {
+            text-align: center;
+            margin-top: 30px;
+            font-size: 18px;
+            color: #cbd5e1;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>AI Alert Security Classification</h1>
+
+    <div class="button-container">
+        <a href="/update_alerts" class="update-button">Actualizar alertas</a>
+    </div>
+
+    <table>
+        <tr>
+            <th>Description</th>
+            <th>Level</th>
+            <th>Groups</th>
+            <th>Timestamp</th>
+            <th>Risk</th>
+            <th>Reason</th>
+        </tr>
+
+        {% for alert in alerts %}
+        <tr>
+            <td>{{ alert.description }}</td>
+            <td>{{ alert.level }}</td>
+            <td>{{ alert.groups }}</td>
+            <td>{{ alert.timestamp }}</td>
+            <td>{{ alert.risk }}</td>
+            <td>{{ alert.reason }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    {% if not alerts %}
+    <div class="empty-message">
+        No alerts available yet.
+    </div>
+    {% endif %}
+
+</body>
+</html>
