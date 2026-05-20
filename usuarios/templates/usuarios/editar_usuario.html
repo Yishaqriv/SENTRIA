@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Editar usuario | SENTRIA</title>
+</head>
+<body>
+
+<h1>Editar usuario: {{ usuario.username }}</h1>
+
+<form method="POST">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit">Actualizar</button>
+</form>
+
+<a href="{% url 'lista_usuarios' %}">Volver</a>
+
+</body>
+</html>

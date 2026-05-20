@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Usuarios | SENTRIA</title>
+</head>
+<body>
+    <h1>Gestión de usuarios</h1>
+
+    {% if messages %}
+        {% for message in messages %}
+            <p>{{ message }}</p>
+        {% endfor %}
+    {% endif %}
+
+    <a href="{% url 'crear_usuario' %}">Crear usuario</a>
+
+    <table border="1" cellpadding="8">
+        <tr>
+            <th>Usuario</th>
+            <th>Nombre</th>
+            <th>Correo</th>
+            <th>Rol</th>
+            <th>Activo</th>
+            <th>Acciones</th>
+        </tr>
+
+        {% for usuario in usuarios %}
+        <tr>
+            <td>{{ usuario.username }}</td>
+            <td>{{ usuario.first_name }} {{ usuario.last_name }}</td>
+            <td>{{ usuario.email }}</td>
+            <td>{{ usuario.perfilusuario.get_rol_display }}</td>
+            <td>{{ usuario.perfilusuario.activo }}</td>
+            <td>
+                <a href="{% url 'editar_usuario' usuario.id %}">Editar</a>
+                |
+                <a href="{% url 'eliminar_usuario' usuario.id %}">Eliminar</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>

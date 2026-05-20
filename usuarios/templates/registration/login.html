@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Login | SENTRIA</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .login-card {
+            background: #111827;
+            border: 1px solid #334155;
+            border-radius: 14px;
+            padding: 40px;
+            width: 360px;
+            box-shadow: 0 0 25px rgba(0,0,0,0.4);
+            text-align: center;
+        }
+
+        .login-card h1 {
+            margin-bottom: 10px;
+            font-size: 30px;
+        }
+
+        .login-card p.subtitle {
+            color: #94a3b8;
+            margin-bottom: 30px;
+        }
+
+        .login-card label {
+            display: block;
+            text-align: left;
+            margin-bottom: 6px;
+            color: #cbd5e1;
+            font-weight: bold;
+        }
+
+        .login-card input {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 18px;
+            border-radius: 8px;
+            border: 1px solid #475569;
+            background: #020617;
+            color: white;
+            font-size: 15px;
+            box-sizing: border-box;
+        }
+
+        .login-card input:focus {
+            outline: none;
+            border-color: #38bdf8;
+        }
+
+        .login-card button {
+            width: 100%;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: #2563eb;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .login-card button:hover {
+            background: #1d4ed8;
+        }
+
+        .error {
+            background: #7f1d1d;
+            color: #fecaca;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .brand {
+            color: #38bdf8;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="login-card">
+    <h1><span class="brand">SENTRIA</span></h1>
+    <p class="subtitle">AI Alert Security Classification</p>
+
+    {% if form.errors %}
+        <div class="error">
+            Usuario o contraseña incorrectos.
+        </div>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+
+        <label for="id_username">Usuario</label>
+        {{ form.username }}
+
+        <label for="id_password">Contraseña</label>
+        {{ form.password }}
+
+        <button type="submit">Ingresar</button>
+    </form>
+</div>
+
+</body>
+</html>
