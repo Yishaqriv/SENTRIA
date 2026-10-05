@@ -51,7 +51,8 @@
 <body>
 <div class="header">
     <h1>SENTRIA — Candidato <code>{{ cand.ejemplo_id }}</code>
-        <span class="pill st-{{ cand.estado }}">{{ cand.get_estado_display }}</span></h1>
+        <span class="pill st-{{ cand.estado }}">{{ cand.get_estado_display }}</span>
+        {% if cand.estado == 'APROBADO' %}<span class="pill st-APROBADO">🔒 Dataset aprobado</span>{% endif %}</h1>
     <a href="{% url 'bandeja_dataset' %}" class="btn-back">← Volver a la bandeja</a>
 </div>
 
@@ -72,6 +73,19 @@
 
     <div class="card">
         <h2>3 · Salida objetivo supervisada</h2>
+        {% if cand.estado == 'APROBADO' %}
+        <p class="sub">
+            🔒 <b>Dataset aprobado — inmutable.</b> La salida supervisada, el snapshot de entrada y la aprobación
+            quedan congelados. No se admiten nuevas ediciones ni confirmaciones/correcciones de esta alerta.
+            Cualquier retiro posterior debe hacerse como una exclusión explícita y auditada (abajo).
+        </p>
+        <pre>{% if salida %}verdict: {{ salida.verdict }}
+risk: {{ salida.risk }}
+explanation_es: {{ salida.explanation_es }}
+cvss_reasoning_es: {{ salida.cvss_reasoning_es }}
+recommendation_es: {{ salida.recommendation_es }}
+missing_evidence: {{ missing_evidence_text }}{% endif %}</pre>
+        {% else %}
         <p class="sub">
             Prellenada desde la salida original. El <b>verdict está bloqueado</b> a la verdad de terreno humana.
             No hay que copiar la alerta ni escribir JSON a mano.
@@ -129,12 +143,18 @@
             </div>
             <p class="note">Aprobar no es automático. El envío exige contrato JSON válido, coherencia con la verdad de terreno, privacidad OK, sin duplicado y la confirmación de arriba.</p>
         </form>
+        {% endif %}
     </div>
 
     {% if puede_segunda_revision %}
     <div class="card">
         <h2>Segunda revisión</h2>
-        {% if es_completador %}
+        {% if solo_exclusion %}
+        <p class="sub" style="color:#f0a860;">
+            🔒 Este candidato está <b>APROBADO</b>: es inmutable. La única acción admitida es una
+            <b>exclusión explícita y auditada</b> (requiere observaciones).
+        </p>
+        {% elif es_completador %}
         <p class="sub" style="color:#f0a860;">Tú completaste este borrador: <b>no puedes hacer la aprobación final</b>. Debe revisarlo otro ADMIN/ANALISTA.</p>
         {% else %}
         <p class="sub">Revisa la salida objetivo y decide. Se conserva autor, fecha, decisión y observaciones. No se borran revisiones anteriores.</p>
@@ -145,9 +165,11 @@
             <label class="fld">Observaciones (obligatorias para devolver o excluir)</label>
             <textarea name="observaciones"></textarea>
             <div class="btn-row">
+                {% if not solo_exclusion %}
                 <button type="submit" name="decision" value="APROBADO" class="btn btn-green"
                         {% if es_completador %}disabled{% endif %}>Aprobar</button>
                 <button type="submit" name="decision" value="DEVUELTO" class="btn btn-amber">Devolver con observaciones</button>
+                {% endif %}
                 <button type="submit" name="decision" value="EXCLUIDO" class="btn btn-slate">Excluir</button>
             </div>
         </form>

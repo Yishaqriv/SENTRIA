@@ -133,16 +133,39 @@ def _normalizar_hit(hit):
     }
 
 
-def get_alert_by_id(opensearch_id):
-    """Lectura de UN documento de Wazuh por su `_id` (para reintentar un análisis)."""
-    query = {"size": 1, "_source": _SOURCE_FIELDS,
-             "query": {"ids": {"values": [str(opensearch_id)]}}}
-    response = requests.get(
+def _get_search(query, timeout=15):
+    """Único `GET .../_search` para lecturas por `_id` (solo lectura)."""
+    return requests.get(
         f"{WAZUH_URL}/{INDEX_NAME}/_search",
-        auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=15,
+        auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=timeout,
     )
+
+
+def _query_por_ids(opensearch_ids, agent_id=None):
+    """Consulta por `_id`; con `agent_id`, el indexador filtra también por `agent.id`."""
+    ids = {"ids": {"values": [str(i) for i in opensearch_ids]}}
+    if agent_id is None:
+        consulta = ids
+    else:
+        consulta = {"bool": {"filter": [ids, {"term": {"agent.id": str(agent_id)}}]}}
+    return {"size": len(opensearch_ids), "_source": _SOURCE_FIELDS, "query": consulta}
+
+
+def get_alert_by_id(opensearch_id, agent_id=None):
+    """Lectura de UN documento de Wazuh por su `_id` (para reintentar un análisis)."""
+    response = _get_search(_query_por_ids([opensearch_id], agent_id))
     hits = response.json().get("hits", {}).get("hits", [])
     return _normalizar_hit(hits[0]) if hits else None
+
+
+def get_alerts_by_ids(opensearch_ids, agent_id=None):
+    """Lectura en lote por `_id` -> {opensearch_id: alerta normalizada}. Falla ante HTTP != 2xx."""
+    opensearch_ids = list(opensearch_ids)
+    if not opensearch_ids:
+        return {}
+    response = _get_search(_query_por_ids(opensearch_ids, agent_id), timeout=20)
+    response.raise_for_status()
+    return {h.get("_id"): _normalizar_hit(h) for h in response.json().get("hits", {}).get("hits", [])}
 
 
 # --- SHIM legacy degradado. No lo use ningún flujo nuevo. ---

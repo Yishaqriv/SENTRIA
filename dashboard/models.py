@@ -298,6 +298,18 @@ class Alert(models.Model):
     correccion_fecha = models.DateTimeField(null=True, blank=True)
     correccion_motivo = models.TextField(null=True, blank=True)
 
+    # ------------------------------------------------------------------
+    # Migración segura del legado (Sprint 3C/3D, aditivo). Antes de aplicar el
+    # contrato de IA actual a una alerta legado (`estado_analisis` NULL), su
+    # `riesgo_ia`/`explicacion_ia`/`estado`/`severidad` ANTERIORES se copian
+    # aquí. Así la migración nunca pierde ni sobrescribe sin respaldo el
+    # análisis legado histórico, aunque reutilice los mismos campos.
+    # ------------------------------------------------------------------
+    legado_snapshot = models.JSONField(
+        null=True, blank=True,
+        help_text="Copia de riesgo_ia/explicacion_ia/estado/severidad previos a migrar del flujo legado.",
+    )
+
     def __str__(self):
         return self.titulo
 
@@ -349,6 +361,12 @@ class Alert(models.Model):
         rev = getattr(self, "revision_humana", None)
         return rev.accion if rev is not None else "SIN_REVISAR"
 
+    @property
+    def dataset_aprobado(self):
+        """True si el candidato del dataset de esta alerta está APROBADO (inmutable, 3C/3D)."""
+        cand = getattr(self, "candidato_dataset", None)
+        return cand is not None and cand.estado == "APROBADO"
+
 
 class RevisionHumana(models.Model):
     """
@@ -364,6 +382,16 @@ class RevisionHumana(models.Model):
         ("CONFIRMADA", "Confirmada (de acuerdo con la IA)"),
         ("CORREGIDA", "Corregida (en desacuerdo con la IA)"),
         ("EXCLUIDA", "Excluida del dataset (evidencia insuficiente)"),
+    ]
+    # Origen auditable de la revisión (Sprint 3C/3D, aditivo). No cambia la
+    # verdad de terreno ni los valores de la matriz: es sólo procedencia, para
+    # que /metricas/ pueda advertir cuándo una cifra no es una muestra
+    # estadística representativa (p. ej. una única prueba controlada).
+    ORIGEN_CHOICES = [
+        ("PRUEBA_CONTROLADA", "Prueba controlada (evento de laboratorio dirigido)"),
+        ("OPERATIVA", "Revisión operativa normal"),
+        ("AUDITORIA_SELECTIVA", "Auditoría selectiva de falsos positivos de la IA"),
+        ("MIGRACION_LEGADO", "Migración de una alerta del flujo legado"),
     ]
     MOTIVO_CHOICES = [
         ("actividad_autorizada", "Actividad autorizada"),
@@ -389,6 +417,11 @@ class RevisionHumana(models.Model):
         max_length=10, choices=RIESGO_CHOICES, null=True, blank=True
     )
     motivo_categoria = models.CharField(max_length=30, choices=MOTIVO_CHOICES)
+    origen = models.CharField(
+        max_length=20, choices=ORIGEN_CHOICES, default="OPERATIVA",
+        help_text="Procedencia auditable de la revisión. No es una muestra estadística representativa "
+                  "salvo OPERATIVA en volumen suficiente.",
+    )
     nota = models.TextField(blank=True, default="")
     autor = models.ForeignKey(
         "auth.User", null=True, blank=True, on_delete=models.SET_NULL,

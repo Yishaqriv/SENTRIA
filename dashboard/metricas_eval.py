@@ -69,3 +69,27 @@ def resumen_revisiones():
         "corregidas": base.filter(accion="CORREGIDA").count(),
         "excluidas": base.filter(accion="EXCLUIDA").count(),
     }
+
+
+# Orígenes que NO constituyen una muestra estadística representativa del
+# rendimiento del clasificador en producción (volumen bajo y/o dirigido).
+_ORIGENES_NO_REPRESENTATIVOS = ("PRUEBA_CONTROLADA",)
+
+
+def resumen_por_origen():
+    """
+    Conteo de revisiones por `origen` (procedencia auditable, 3C/3D). No
+    cambia la verdad de terreno ni los valores de la matriz: es sólo
+    metainformación para que /metricas/ advierta cuándo una cifra no es
+    representativa (p. ej. una única prueba controlada).
+    """
+    from django.db.models import Count
+    etiquetas = dict(RevisionHumana.ORIGEN_CHOICES)
+    conteos = {clave: 0 for clave, _ in RevisionHumana.ORIGEN_CHOICES}
+    for fila in RevisionHumana.objects.values("origen").annotate(n=Count("id")):
+        conteos[fila["origen"]] = fila["n"]
+    return [
+        {"origen": clave, "etiqueta": etiquetas[clave], "n": conteos[clave],
+         "representativo": clave not in _ORIGENES_NO_REPRESENTATIVOS}
+        for clave, _ in RevisionHumana.ORIGEN_CHOICES
+    ]

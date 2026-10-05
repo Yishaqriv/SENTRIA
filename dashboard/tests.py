@@ -993,7 +993,7 @@ class InterfazLegacyTests(TestCase):
         self.assertTrue(legacy.analisis_legado)
         r = self.client.get(reverse("index"))
         cuerpo = r.content.decode()
-        self.assertIn("Análisis legado", cuerpo)
+        self.assertIn("Análisis Legado - Pendiente de migrar al flujo IA actual", cuerpo)
         # no se presenta como veredicto del contrato nuevo
         # (la fila de esta alerta no lleva pill "Requiere atención"/"Falso positivo")
 
@@ -1017,7 +1017,7 @@ class InterfazLegacyTests(TestCase):
         self.assertIn(reverse("corregir_veredicto", args=[comp.id]), r2.content.decode())
         resp2 = self.client.get(reverse("corregir_veredicto", args=[comp.id]))
         self.assertEqual(resp2.status_code, 200)
-        self.assertContains(resp2, "Corregir veredicto")
+        self.assertContains(resp2, "Corregir clasificación")
 
     def test_corregir_veredicto_exige_motivo_y_registra(self):
         comp = self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="HIGH")
@@ -1507,7 +1507,7 @@ class ReintentarAnalisisTests(TestCase):
     def test_revision_humana_sin_revisar(self):
         self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="HIGH", descripcion="NUEVA")
         body = self.client.get(reverse("index")).content.decode()
-        self.assertIn("Revisión humana", body)
+        self.assertIn("Revisión Analista", body)
         self.assertIn("Sin revisar", body)
 
     def test_evidencia_tecnica_utilizada_en_detalle(self):
@@ -2687,3 +2687,1076 @@ class ID128Editor3BTests(TestCase):
         self.assertEqual(self.a.veredicto_ia, "REQUIERE_ATENCION")
         self.assertEqual(self.a.correccion_veredicto, "FALSO_POSITIVO")
         self.assertIn("REQUIERE_ATENCION", self.a.respuesta_ia_original)
+
+
+# ============================================================================
+# Sprint 3C/3D — operación selectiva, dashboard centrado en IA, dataset acelerado
+# ============================================================================
+from dashboard.ia.muestreo import (
+    en_muestra_selectiva, requiere_auditoria_selectiva, POLITICA_MUESTREO_VERSION,
+)
+from dashboard.ia.legado import diagnosticar_legado
+from dashboard.management.commands.migrar_legado import procesar_migracion_legado, GATE_ENV_VAR
+from dashboard import planificador_dataset as pldata
+from dashboard.views import (
+    Q_PENDIENTES_TECNICOS, Q_LEGADO, Q_OMITIDAS, _auditoria_selectiva_ids,
+)
+
+
+def _activo_laptop():
+    return ActivoLogico.objects.create(
+        identificador="LAPTOP-01", nombre_visible="Portátil de pruebas",
+        tipo_activo="equipo_administracion", criticidad="media",
+        os_family="windows", os_role="estacion_cliente",
+        hora_inicio_operacion=datetime.time(0, 0), hora_fin_operacion=datetime.time(23, 59),
+        zona_horaria="America/Bogota",
+        contexto_autorizado_es="Portátil Windows ficticio para pruebas de multiagente; no conectado todavía.",
+        activo=True,
+    )
+
+
+class TextosYDisenoTests(TestCase):
+    """FASE 2: textos exactos y clasificación IA como elemento principal."""
+    def setUp(self):
+        self.u = User.objects.create_user("tx1", password="p")
+        self.client.force_login(self.u)
+
+    def test_encabezados_exactos(self):
+        self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="HIGH")
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn("Clasificación IA", body)
+        self.assertIn("Revisión Analista", body)
+        self.assertNotIn(">Veredicto IA<", body)
+        self.assertNotIn(">Revisión humana<", body)
+
+    def test_texto_legado_exacto(self):
+        self._a(descripcion="vieja")
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn("Análisis Legado - Pendiente de migrar al flujo IA actual", body)
+
+    def _a(self, **kw):
+        base = dict(titulo="t", descripcion="d", estado="Pendiente")
+        base.update(kw)
+        return Alert.objects.create(**base)
+
+
+class MenuAccionesTests(TestCase):
+    """FASE 2: menú compacto 'Acciones ▾' con acciones condicionales."""
+    def setUp(self):
+        self.analista = User.objects.create_user("ma1", password="p")
+        self.invitado = User.objects.create_user("mainv", password="p")
+        self.invitado.perfilusuario.rol = "INVITADO"; self.invitado.perfilusuario.save()
+
+    def _a(self, **kw):
+        base = dict(titulo="t", descripcion="d", estado="Pendiente")
+        base.update(kw)
+        return Alert.objects.create(**base)
+
+    def test_un_solo_boton_acciones(self):
+        self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="HIGH")
+        self.client.force_login(self.analista)
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn("Acciones ▾", body)
+        self.assertIn("actions-menu", body)
+
+    def test_acciones_condicionales_por_estado(self):
+        completada = self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="HIGH")
+        fallida = self._a(estado_analisis="ANALISIS_FALLIDO", descripcion="FALLO-UNICA-XYZ")
+        self.client.force_login(self.analista)
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn("Confirmar clasificación IA", body)
+        self.assertIn("Corregir clasificación IA", body)
+        self.assertIn("Reintentar análisis", body)
+
+    def test_invitado_no_ve_acciones_de_escritura(self):
+        self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="HIGH")
+        self.client.force_login(self.invitado)
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertNotIn("Confirmar clasificación IA", body)
+        self.assertNotIn("Corregir clasificación IA", body)
+
+    def test_aprobado_oculta_confirmar_corregir_y_muestra_insignia(self):
+        a = self._a(estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW",
+                    contexto_ia_snapshot=dict(_SNAP_SEGURO))
+        registrar_revision(a, accion="CORREGIDA", motivo_categoria="otro", autor=self.analista,
+                           veredicto_gt="FALSO_POSITIVO")
+        cand = a.candidato_dataset
+        otro = User.objects.create_user("ma2", password="p")
+        cand, _ = _ds.enviar_a_revision(cand, {
+            "risk": "LOW", "explanation_es": "Explicación suficientemente larga para pasar la validación del contrato.",
+            "cvss__attack_vector": "local", "cvss__attack_complexity": "baja",
+            "cvss__privileges_required": "bajos", "cvss__user_interaction": "ninguna",
+            "cvss__scope": "sin_cambio", "cvss__confidentiality_impact": "ninguno",
+            "cvss__integrity_impact": "bajo", "cvss__availability_impact": "ninguno",
+            "cvss_reasoning_es": "Justificación suficientemente larga para pasar la validación del contrato CVSS.",
+            "recommendation_es": "Cerrar la alerta tras confirmar con el equipo responsable.",
+            "missing_evidence": "",
+        }, self.analista, confirmado=True)
+        _ds.revisar_candidato(cand, decision="APROBADO", autor=otro)
+        a.refresh_from_db()
+        self.assertTrue(a.dataset_aprobado)
+        self.client.force_login(otro)
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn("Dataset aprobado", body)
+        self.assertNotIn("Confirmar clasificación IA", body)
+        self.assertNotIn("Corregir clasificación IA", body)
+
+
+class ColasSeparadasTests(TestCase):
+    """FASE 3/4: colas más claras; legado nunca cuenta como pendiente ordinario."""
+    def setUp(self):
+        self.u = User.objects.create_user("cs1", password="p")
+        self.client.force_login(self.u)
+
+    def _a(self, **kw):
+        base = dict(titulo="t", descripcion="d", estado="Pendiente")
+        base.update(kw)
+        return Alert.objects.create(**base)
+
+    def test_legado_no_es_pendiente_tecnico(self):
+        legado = self._a(descripcion="LEGADO-UNICA")
+        self.assertTrue(Alert.objects.filter(Q_LEGADO, pk=legado.pk).exists())
+        self.assertFalse(Alert.objects.filter(Q_PENDIENTES_TECNICOS, pk=legado.pk).exists())
+
+    def test_cola_legado_y_cola_pendientes_separadas(self):
+        legado = self._a(descripcion="LEG-SOLO")
+        fallida = self._a(descripcion="FALLO-SOLO", estado_analisis="ANALISIS_FALLIDO")
+        r_legado = self.client.get(reverse("cola_legado"))
+        r_pend = self.client.get(reverse("cola_pendientes"))
+        self.assertContains(r_legado, "LEG-SOLO")
+        self.assertNotContains(r_legado, "FALLO-SOLO")
+        self.assertContains(r_pend, "FALLO-SOLO")
+        self.assertNotContains(r_pend, "LEG-SOLO")
+
+    def test_cola_omitidas_separada(self):
+        om = self._a(descripcion="OMIT-SOLO", estado_analisis="OMITIDO_POLITICA", motivo_omision="NIVEL_NO_ELEGIBLE")
+        r = self.client.get(reverse("cola_omitidas"))
+        self.assertContains(r, "OMIT-SOLO")
+        self.assertFalse(Alert.objects.filter(Q_PENDIENTES_TECNICOS, pk=om.pk).exists())
+
+    def test_alias_falsos_positivos_ia_redirige(self):
+        r = self.client.get(reverse("cola_falsos_positivos_ia"))
+        self.assertEqual(r.status_code, 302)
+        self.assertIn(reverse("cola_falsos_positivos"), r["Location"])
+
+
+class MuestreoSelectivoTests(SimpleTestCase):
+    """FASE 4: muestreo determinista del 10%, sin ORDER BY RAND()."""
+
+    def test_determinista_y_estable(self):
+        for pk in (1, 42, 999, 123456):
+            r1 = en_muestra_selectiva(pk)
+            r2 = en_muestra_selectiva(pk)
+            r3 = en_muestra_selectiva(pk)
+            self.assertEqual(r1, r2)
+            self.assertEqual(r2, r3)
+
+    def test_version_distinta_puede_cambiar_resultado_pero_sigue_siendo_determinista(self):
+        pk = 777
+        a = en_muestra_selectiva(pk, version="1.0")
+        b1 = en_muestra_selectiva(pk, version="2.0-prueba")
+        b2 = en_muestra_selectiva(pk, version="2.0-prueba")
+        self.assertEqual(b1, b2)  # determinista también bajo otra versión
+
+    def test_distribucion_cercana_al_10_por_ciento(self):
+        n = 4000
+        positivos = sum(1 for pk in range(1, n + 1) if en_muestra_selectiva(pk))
+        proporcion = positivos / n
+        self.assertTrue(0.07 <= proporcion <= 0.13, f"proporción observada: {proporcion}")
+
+    def test_nunca_usa_random_del_proceso(self):
+        import random
+        estado_antes = random.getstate()
+        en_muestra_selectiva(12345)
+        self.assertEqual(random.getstate(), estado_antes)
+
+
+class AuditoriaSelectivaTests(TestCase):
+    """FASE 4: política de auditoría selectiva de falsos positivos de la IA."""
+    def setUp(self):
+        self.admin = User.objects.create_user("au1", password="p")
+        self.admin.perfilusuario.rol = "ADMIN"; self.admin.perfilusuario.save()
+
+    def _fp(self, **kw):
+        base = dict(titulo="t", descripcion="FP", estado="Pendiente",
+                    estado_analisis="COMPLETED", veredicto_ia="FALSO_POSITIVO", riesgo_ia="LOW")
+        base.update(kw)
+        return Alert.objects.create(**base)
+
+    def test_nivel_alto_siempre_entra(self):
+        a = self._fp(severidad=10, riesgo_ia="LOW")
+        ok, motivo = requiere_auditoria_selectiva(a)
+        self.assertTrue(ok); self.assertEqual(motivo, "nivel_alto")
+
+    def test_nivel_justo_debajo_del_umbral_no_fuerza_por_nivel(self):
+        a = self._fp(severidad=9, riesgo_ia="LOW")
+        ok, motivo = requiere_auditoria_selectiva(a)
+        self.assertNotEqual(motivo, "nivel_alto")
+
+    def test_riesgo_high_o_critical_siempre_entra(self):
+        a = self._fp(severidad=1, riesgo_ia="HIGH")
+        ok, motivo = requiere_auditoria_selectiva(a)
+        self.assertTrue(ok); self.assertEqual(motivo, "riesgo_alto")
+        b = self._fp(severidad=1, riesgo_ia="CRITICAL")
+        ok2, motivo2 = requiere_auditoria_selectiva(b)
+        self.assertTrue(ok2); self.assertEqual(motivo2, "riesgo_alto")
+
+    def test_riesgo_medium_no_fuerza_por_riesgo(self):
+        a = self._fp(severidad=1, riesgo_ia="MEDIUM")
+        ok, motivo = requiere_auditoria_selectiva(a)
+        self.assertNotEqual(motivo, "riesgo_alto")
+
+    def test_requiere_atencion_nunca_entra_a_auditoria(self):
+        a = Alert.objects.create(titulo="t", descripcion="RA", estado="Pendiente",
+                                 estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION",
+                                 riesgo_ia="HIGH", severidad=15)
+        ids = _auditoria_selectiva_ids()
+        self.assertNotIn(a.pk, ids)
+
+    def test_alerta_ya_revisada_no_vuelve_a_auditoria(self):
+        a = self._fp(severidad=10)   # nivel alto -> calificaría
+        self.assertIn(a.pk, _auditoria_selectiva_ids())
+        registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.admin)
+        self.assertNotIn(a.pk, _auditoria_selectiva_ids())
+
+    def test_cola_auditoria_selectiva_responde_y_filtra(self):
+        dentro = self._fp(severidad=10, descripcion="AUD-DENTRO")
+        fuera = self._fp(severidad=1, riesgo_ia="LOW", descripcion="AUD-FUERA-000000")
+        # sin opensearch_id "fuera" no puede caer en la muestra del 10%
+        self.assertEqual(requiere_auditoria_selectiva(fuera), (False, None))
+        self.client.force_login(self.admin)
+        r = self.client.get(reverse("cola_auditoria_selectiva"))
+        self.assertEqual(r.status_code, 200)
+        self.assertContains(r, "AUD-DENTRO")
+        self.assertNotContains(r, "AUD-FUERA-000000")
+
+    def test_no_crea_ni_consume_campo_de_confianza(self):
+        """El contrato de salida no tiene (ni debe tener) un campo de confianza inventado."""
+        self.assertNotIn("confidence", contrato.CAMPOS_SALIDA)
+        self.assertNotIn("confianza", contrato.CAMPOS_SALIDA)
+
+
+class OrigenRevisionTests(TestCase):
+    """FASE 5: origen auditable de RevisionHumana; métricas con disclaimer."""
+    def setUp(self):
+        self.u = User.objects.create_user("or1", password="p")
+
+    def _completed(self, **kw):
+        base = dict(titulo="t", descripcion="d", estado="Pendiente",
+                    estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW")
+        base.update(kw)
+        return Alert.objects.create(**base)
+
+    def test_origen_por_defecto_operativa(self):
+        a = self._completed()
+        registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.u)
+        self.assertEqual(a.revision_humana.origen, "OPERATIVA")
+
+    def test_origen_explicito_se_respeta(self):
+        a = self._completed()
+        registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.u, origen="AUDITORIA_SELECTIVA")
+        self.assertEqual(a.revision_humana.origen, "AUDITORIA_SELECTIVA")
+
+    def test_origen_invalido_rechazado(self):
+        a = self._completed()
+        with self.assertRaises(ValueError):
+            registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.u, origen="INVENTADO")
+
+    def test_metricas_muestra_desglose_por_origen_y_advertencia(self):
+        a = self._completed()
+        registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.u, origen="PRUEBA_CONTROLADA")
+        self.client.force_login(self.u)
+        body = self.client.get(reverse("metricas")).content.decode()
+        self.assertIn("Prueba controlada", body)
+        self.assertIn("no constituyen una muestra estadística representativa", body)
+
+    def test_origen_prueba_controlada_explicito_conserva_verdad_de_terreno(self):
+        a = self._completed(id=128, veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW")
+        from dashboard.revision import sincronizar_revision_desde_correccion
+        registrar_correccion_humana(a, veredicto="FALSO_POSITIVO", autor=self.u, motivo="prueba controlada")
+        sincronizar_revision_desde_correccion(a, motivo_categoria="mantenimiento_programado", origen="PRUEBA_CONTROLADA")
+        a.refresh_from_db()
+        self.assertEqual(a.revision_humana.origen, "PRUEBA_CONTROLADA")
+        self.assertEqual(a.verdad_terreno, "FALSO_POSITIVO")   # verdad de terreno sin cambios
+
+
+class ProteccionAprobadoBackendTests(TestCase):
+    """FASE 6: un candidato APROBADO es inmutable también en el backend."""
+    def setUp(self):
+        self.a1 = User.objects.create_user("pa1", password="p")
+        self.a2 = User.objects.create_user("pa2", password="p")
+
+    def _completada_aprobada(self):
+        a = Alert.objects.create(titulo="t", descripcion="d", estado="Pendiente",
+                                 estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW",
+                                 contexto_ia_snapshot=dict(_SNAP_SEGURO))
+        registrar_revision(a, accion="CORREGIDA", motivo_categoria="otro", autor=self.a1,
+                           veredicto_gt="FALSO_POSITIVO")
+        cand = a.candidato_dataset
+        cand, errores = _ds.enviar_a_revision(cand, {
+            "risk": "LOW", "explanation_es": "Explicación suficientemente larga para pasar la validación del contrato.",
+            "cvss__attack_vector": "local", "cvss__attack_complexity": "baja",
+            "cvss__privileges_required": "bajos", "cvss__user_interaction": "ninguna",
+            "cvss__scope": "sin_cambio", "cvss__confidentiality_impact": "ninguno",
+            "cvss__integrity_impact": "bajo", "cvss__availability_impact": "ninguno",
+            "cvss_reasoning_es": "Justificación suficientemente larga para pasar la validación del contrato CVSS.",
+            "recommendation_es": "Cerrar la alerta tras confirmar con el equipo responsable.",
+            "missing_evidence": "",
+        }, self.a1, confirmado=True)
+        self.assertEqual(errores, [])
+        cand, errores = _ds.revisar_candidato(cand, decision="APROBADO", autor=self.a2)
+        self.assertEqual(errores, [])
+        a.refresh_from_db()
+        return a, cand
+
+    def test_registrar_revision_rechaza_sobre_aprobado(self):
+        a, cand = self._completada_aprobada()
+        with self.assertRaises(ValueError):
+            registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.a1)
+
+    def test_guardar_borrador_rechaza_sobre_aprobado(self):
+        a, cand = self._completada_aprobada()
+        cand, errores = _ds.guardar_borrador(cand, {"risk": "HIGH"}, self.a1)
+        self.assertTrue(errores)
+        cand.refresh_from_db()
+        self.assertEqual(cand.estado, "APROBADO")
+
+    def test_enviar_a_revision_rechaza_sobre_aprobado(self):
+        a, cand = self._completada_aprobada()
+        cand, errores = _ds.enviar_a_revision(cand, {"risk": "HIGH"}, self.a1, confirmado=True)
+        self.assertTrue(errores)
+
+    def test_revisar_candidato_solo_admite_exclusion(self):
+        a, cand = self._completada_aprobada()
+        cand, errores = _ds.revisar_candidato(cand, decision="DEVUELTO", autor=self.a1, observaciones="x")
+        self.assertTrue(errores)
+        cand.refresh_from_db()
+        self.assertEqual(cand.estado, "APROBADO")
+        cand, errores = _ds.revisar_candidato(cand, decision="EXCLUIDO", autor=self.a1, observaciones="retiro auditado")
+        self.assertEqual(errores, [])
+        cand.refresh_from_db()
+        self.assertEqual(cand.estado, "EXCLUIDO")
+        # queda la revisión de aprobación Y la de exclusión; nada se borra
+        self.assertEqual(RevisionCandidato.objects.filter(candidato=cand).count(), 2)
+
+    def test_sincronizar_nunca_degrada_aprobado(self):
+        a, cand = self._completada_aprobada()
+        _ds.sincronizar_candidato(a)
+        cand.refresh_from_db()
+        self.assertEqual(cand.estado, "APROBADO")
+
+    def test_vista_corregir_veredicto_bloquea_aprobado(self):
+        a, cand = self._completada_aprobada()
+        self.client.force_login(self.a1)
+        r = self.client.post(reverse("corregir_veredicto", args=[a.id]),
+                             {"correccion_veredicto": "REQUIERE_ATENCION", "motivo_categoria": "otro"})
+        self.assertEqual(r.status_code, 302)
+        a.refresh_from_db()
+        self.assertEqual(a.correccion_veredicto, "FALSO_POSITIVO")  # sin cambios
+
+
+class ID128InmutableTests(TestCase):
+    """FASE 6/10: id 128 (candidato ya APROBADO en producción) queda intacta."""
+    def setUp(self):
+        self.admin = User.objects.create_user("i128b", password="p")
+        self.admin.perfilusuario.rol = "ADMIN"; self.admin.perfilusuario.save()
+        self.a = Alert.objects.create(
+            id=128, titulo="t", descripcion="d", estado="Pendiente",
+            estado_analisis="COMPLETED", veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW",
+            contexto_ia_snapshot=dict(_SNAP_SEGURO),
+        )
+        registrar_correccion_humana(self.a, veredicto="FALSO_POSITIVO", autor=self.admin, motivo="x")
+        from dashboard.revision import sincronizar_revision_desde_correccion
+        sincronizar_revision_desde_correccion(self.a, motivo_categoria="mantenimiento_programado")
+
+    def test_no_se_completa_ni_aprueba_automaticamente(self):
+        self.a.refresh_from_db()
+        self.assertEqual(self.a.candidato_dataset.estado, "INCOMPLETO")
+
+    def test_si_llega_a_aprobado_queda_protegida(self):
+        cand = self.a.candidato_dataset
+        otro = User.objects.create_user("i128c", password="p")
+        cand, errores = _ds.enviar_a_revision(cand, {
+            "risk": "LOW", "explanation_es": "Explicación suficientemente larga para pasar la validación del contrato.",
+            "cvss__attack_vector": "local", "cvss__attack_complexity": "baja",
+            "cvss__privileges_required": "bajos", "cvss__user_interaction": "ninguna",
+            "cvss__scope": "sin_cambio", "cvss__confidentiality_impact": "ninguno",
+            "cvss__integrity_impact": "bajo", "cvss__availability_impact": "ninguno",
+            "cvss_reasoning_es": "Justificación suficientemente larga para pasar la validación del contrato CVSS.",
+            "recommendation_es": "Cerrar la alerta tras confirmar con el equipo responsable.",
+            "missing_evidence": "",
+        }, self.admin, confirmado=True)
+        self.assertEqual(errores, [])
+        cand, errores = _ds.revisar_candidato(cand, decision="APROBADO", autor=otro)
+        self.assertEqual(errores, [])
+        self.a.refresh_from_db()
+        self.assertTrue(self.a.dataset_aprobado)
+        with self.assertRaises(ValueError):
+            registrar_revision(self.a, accion="CONFIRMADA", motivo_categoria="otro", autor=self.admin)
+
+
+class MultiagenteTests(TestCase):
+    """FASE 8: la ingesta no está restringida al agent.id 000."""
+    def setUp(self):
+        self.srv = _activo_real()
+        self.laptop = _activo_laptop()
+        asignar_agente("000", "SRV-01")
+        asignar_agente("101", "LAPTOP-01", etiqueta="WIN-FICTICIO")
+
+    def test_agente_000_sigue_funcionando(self):
+        self.assertEqual(resolver_activo_por_agente("000").identificador, "SRV-01")
+
+    def test_agente_windows_ficticio_resuelve_a_su_propio_activo(self):
+        activo = resolver_activo_por_agente("101")
+        self.assertIsNotNone(activo)
+        self.assertEqual(activo.identificador, "LAPTOP-01")
+        self.assertEqual(activo.os_family, "windows")
+
+    def test_cada_agente_a_su_propio_activo_no_se_mezclan(self):
+        self.assertNotEqual(
+            resolver_activo_por_agente("000").identificador,
+            resolver_activo_por_agente("101").identificador,
+        )
+
+    def test_agente_sin_asignacion_se_rechaza(self):
+        self.assertIsNone(resolver_activo_por_agente("999"))
+
+    def test_identificador_privado_no_llega_a_evidencia_ni_entrada_e(self):
+        alert = {
+            "description": "File deleted.", "level": 8,
+            "groups": "ossec,syscheck,syscheck_entry_deleted", "rule_id": "553",
+            "timestamp": "2026-10-05T10:00:00Z", "agent_id": "101",
+        }
+        activo = resolver_activo_por_agente("101")
+        entrada = construir_entrada_e(alert, activo)
+        blob = json.dumps(entrada)
+        self.assertNotIn("101", blob)
+
+    def test_ingesta_real_con_agente_windows_asigna_activo_correcto(self):
+        fake = _ProveedorFake()
+        alert = {
+            "opensearch_id": "WIN-TEST-1", "description": "Suspicious logon.", "level": 9,
+            "groups": "authentication_failed,windows", "rule_id": "60122",
+            "timestamp": "2026-10-05T10:00:00Z", "agent_id": "101",
+        }
+        obj, accion = ingestar_alerta(alert, proveedor=fake)
+        self.assertEqual(obj.activo_logico.identificador, "LAPTOP-01")
+        self.assertIsNone(obj.wazuh_agent_id and None)  # wazuh_agent_id es capa P; no se afirma nada sobre su exposición pública
+        self.assertNotIn("101", obj.descripcion)
+
+
+class MigracionLegadoDryRunTests(TestCase):
+    """FASE 7: el comando de migración del legado SOLO diagnostica en dry-run."""
+    def setUp(self):
+        self.srv = _activo_real()
+        asignar_agente("000", "SRV-01")
+        Alert.objects.create(titulo="t", descripcion="legado 1", estado="Pendiente")
+        Alert.objects.create(titulo="t", descripcion="legado 2", estado="Pendiente",
+                             opensearch_id="LEG-OSID-1")
+
+    def test_dry_run_no_llama_proveedor_ni_escribe(self):
+        import dashboard.ia.legado as legado_mod
+        original = legado_mod._buscar_documentos
+        legado_mod._buscar_documentos = lambda ids: {}   # sin red: simula Wazuh inalcanzable
+        llamado = {}
+        def _prov(_n):
+            llamado["si"] = True
+            return None
+        def _get_uno(_id):
+            return None
+        try:
+            r = procesar_migracion_legado(
+                scan_limit=10, max_analisis=2, dry=True, conf=False,
+                get_uno=_get_uno, obtener_proveedor=_prov, log=lambda _s: None,
+            )
+        finally:
+            legado_mod._buscar_documentos = original
+        self.assertNotIn("si", llamado)
+        self.assertEqual(r["modo"], "dry-run")
+        self.assertEqual(r["migradas"], 0)
+        self.assertEqual(r["llamadas_reales"], 0)
+        self.assertIn("diagnostico", r)
+        # no se tocó ninguna alerta
+        for a in Alert.objects.all():
+            self.assertIsNone(a.estado_analisis)
+
+    def test_confirmar_sin_gate_de_entorno_aborta(self):
+        os.environ.pop(GATE_ENV_VAR, None)
+        with self.assertRaises(Exception):
+            procesar_migracion_legado(
+                scan_limit=10, max_analisis=1, dry=False, conf=True, agent_id="000",
+                get_uno=lambda _id: None, obtener_proveedor=lambda _n: None, log=lambda _s: None,
+            )
+        for a in Alert.objects.all():
+            self.assertIsNone(a.estado_analisis)   # sin escrituras
+
+    def test_diagnosticar_legado_no_rompe_sin_wazuh(self):
+        # con mocks que simulan "sin red", debe devolver un resumen y no reventar
+        import dashboard.ia.legado as legado_mod
+        original = legado_mod._buscar_documentos
+        legado_mod._buscar_documentos = lambda ids: {}
+        try:
+            resumen = diagnosticar_legado()
+            self.assertIn("legado_total", resumen)
+            self.assertEqual(resumen["sin_documento"], resumen["legado_con_opensearch_id"])
+        finally:
+            legado_mod._buscar_documentos = original
+
+
+class PlanificadorDatasetTests(TestCase):
+    """FASE 9: planificador dry-run sin duplicados ni fuga entre conjuntos."""
+
+    def test_ningun_bucket_se_reparte_entre_conjuntos(self):
+        pools = {
+            ("fim:deleted", "legado_recuperado"): 40,
+            ("authentication_failed", "escenario_ubuntu_controlado"): 60,
+            ("web", "escenario_ubuntu_controlado"): 30,
+            ("sshd", "legado_recuperado"): 25,
+        }
+        plan = pldata.construir_plan(pools)
+        vistos = {}
+        for conjunto, filas in plan["detalle"].items():
+            for f in filas:
+                clave = (f["familia"], f["origen"])
+                self.assertNotIn(clave, vistos, "un bucket no debe aparecer en dos conjuntos")
+                vistos[clave] = conjunto
+
+    def test_respeta_objetivos(self):
+        pools = {("fim:deleted", "legado_recuperado"): 500}
+        plan = pldata.construir_plan(pools)
+        self.assertLessEqual(plan["asignado"]["train"], pldata.OBJETIVO_TRAIN)
+        self.assertLessEqual(plan["asignado"]["val"], pldata.OBJETIVO_VAL)
+        self.assertLessEqual(plan["asignado"]["test"], pldata.OBJETIVO_TEST_MAX)
+
+    def test_sin_disponibilidad_no_asigna_nada(self):
+        plan = pldata.construir_plan({})
+        self.assertEqual(sum(plan["asignado"].values()), 0)
+
+    def test_pools_ubuntu_controlado_es_estimacion_no_real(self):
+        pools = pldata.pools_ubuntu_controlado(3, ["fim:deleted", "sshd"])
+        self.assertTrue(all(v > 0 for v in pools.values()))
+
+    def test_vista_planificador_responde_solo_categorias(self):
+        u = User.objects.create_user("plan1", password="p")
+        self.client.force_login(u)
+        r = self.client.get(reverse("planificador_dataset"))
+        self.assertEqual(r.status_code, 200)
+        body = r.content.decode()
+        self.assertIn("Solo planificación", body)
+        self.assertNotIn(".jsonl", body.lower())
+
+
+# ============================================================================
+# Correcciones precommit 3C/3D
+# ============================================================================
+import hashlib
+import importlib
+
+from django.core.management.base import CommandError
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import Client, TransactionTestCase
+
+from dashboard.ia import muestreo as _muestreo
+from dashboard.management.commands.migrar_legado import GEMINI_GATE_ENV_VAR
+
+
+class Migracion0010PortableTests(TransactionTestCase):
+    """0010 es portable: no marca ninguna fila concreta (p. ej. una PK 128 ajena)."""
+    MIG_ANTERIOR = [("dashboard", "0009_editor_candidato_dataset")]
+    MIG_0010 = [("dashboard", "0010_legado_snapshot_y_origen_revision")]
+
+    def test_estructura_dos_addfield_y_runpython_noop(self):
+        from django.db import migrations
+        mod = importlib.import_module("dashboard.migrations.0010_legado_snapshot_y_origen_revision")
+        ops = mod.Migration.operations
+        self.assertEqual([type(o).__name__ for o in ops], ["AddField", "AddField", "RunPython"])
+        self.assertIs(ops[2].code, migrations.RunPython.noop)
+        self.assertIs(ops[2].reverse_code, migrations.RunPython.noop)
+
+    def test_base_nueva_con_pk_128_no_se_modifica(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate(self.MIG_ANTERIOR)
+        try:
+            apps_viejas = executor.loader.project_state(self.MIG_ANTERIOR).apps
+            AlertH = apps_viejas.get_model("dashboard", "Alert")
+            RevH = apps_viejas.get_model("dashboard", "RevisionHumana")
+            alerta = AlertH.objects.create(id=128, titulo="otra instalación", descripcion="d", estado="Pendiente")
+            RevH.objects.create(alerta=alerta, accion="CONFIRMADA", motivo_categoria="otro")
+
+            executor = MigrationExecutor(connection)
+            executor.migrate(self.MIG_0010)
+            apps_nuevas = executor.loader.project_state(self.MIG_0010).apps
+            RevN = apps_nuevas.get_model("dashboard", "RevisionHumana")
+            self.assertEqual(RevN.objects.get(alerta_id=128).origen, "OPERATIVA")
+        finally:
+            executor = MigrationExecutor(connection)
+            executor.loader.build_graph()
+            executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+def _osid_ficticio(i):
+    """Identificador con forma de `_id` de OpenSearch (20 caracteres), ficticio."""
+    return hashlib.sha1(f"doc-ficticio-{i}".encode()).hexdigest()[:20]
+
+
+def _osid_en_muestra(dentro=True):
+    """Primer identificador ficticio que cae (o no) en la muestra del 10 %."""
+    i = 0
+    while _muestreo.en_muestra_selectiva(_osid_ficticio(i)) != dentro:
+        i += 1
+    return _osid_ficticio(i)
+
+
+class MuestreoSalPublicaTests(SimpleTestCase):
+    """Muestra del 10 %: SHA-256(sal pública versionada + opensearch_id), nunca PK ni SECRET_KEY."""
+
+    def _fp(self, **kw):
+        base = dict(titulo="t", descripcion="d", estado="Pendiente", estado_analisis="COMPLETED",
+                    veredicto_ia="FALSO_POSITIVO", riesgo_ia="LOW", severidad=3)
+        base.update(kw)
+        return Alert(**base)          # sin guardar: sólo se evalúa la política
+
+    def test_formula_publica_reproducible_en_cualquier_entorno(self):
+        for i in range(50):
+            osid = _osid_ficticio(i)
+            digest = hashlib.sha256(f"SENTRIA_AUDIT_SAMPLE_V1:{osid}".encode("utf-8")).hexdigest()
+            esperado = int(digest[:8], 16) / 0x100000000 < 0.10
+            self.assertEqual(_muestreo.en_muestra_selectiva(osid), esperado)
+
+    def test_mismo_opensearch_id_con_pk_distinta_misma_decision(self):
+        for dentro in (True, False):
+            osid = _osid_en_muestra(dentro)
+            a = self._fp(pk=5, opensearch_id=osid)
+            b = self._fp(pk=98765, opensearch_id=osid)
+            self.assertEqual(requiere_auditoria_selectiva(a), requiere_auditoria_selectiva(b))
+            self.assertEqual(requiere_auditoria_selectiva(a)[0], dentro)
+
+    def test_la_pk_no_influye(self):
+        osid = _osid_en_muestra(False)
+        for pk in range(1, 400):
+            self.assertEqual(requiere_auditoria_selectiva(self._fp(pk=pk, opensearch_id=osid)), (False, None))
+
+    def test_independiente_de_secret_key(self):
+        ids = [_osid_ficticio(i) for i in range(500)]
+        with override_settings(SECRET_KEY="clave-a-solo-para-prueba"):
+            a = [_muestreo.en_muestra_selectiva(i) for i in ids]
+        with override_settings(SECRET_KEY="clave-b-rotada-solo-para-prueba"):
+            b = [_muestreo.en_muestra_selectiva(i) for i in ids]
+        self.assertEqual(a, b)
+
+    def test_estable_entre_ejecuciones(self):
+        ids = [_osid_ficticio(i) for i in range(300)]
+        self.assertEqual([_muestreo.en_muestra_selectiva(i) for i in ids],
+                         [_muestreo.en_muestra_selectiva(i) for i in ids])
+
+    def test_aproximadamente_10_por_ciento_con_ids_opensearch(self):
+        n = 20000
+        proporcion = sum(_muestreo.en_muestra_selectiva(_osid_ficticio(i)) for i in range(n)) / n
+        self.assertTrue(0.09 <= proporcion <= 0.11, f"proporción observada: {proporcion}")
+
+    def test_sin_opensearch_id_no_entra_por_muestra_ni_falla(self):
+        self.assertFalse(_muestreo.en_muestra_selectiva(None))
+        self.assertFalse(_muestreo.en_muestra_selectiva(""))
+        self.assertFalse(_muestreo.en_muestra_selectiva("   "))
+        for pk in range(1, 300):          # sin fallback a la PK, cualquiera que sea
+            for vacio in (None, ""):
+                self.assertEqual(requiere_auditoria_selectiva(self._fp(pk=pk, opensearch_id=vacio)), (False, None))
+
+    def test_sin_opensearch_id_entra_por_nivel(self):
+        self.assertEqual(requiere_auditoria_selectiva(self._fp(opensearch_id=None, severidad=10)),
+                         (True, "nivel_alto"))
+
+    def test_sin_opensearch_id_entra_por_riesgo(self):
+        for riesgo in ("HIGH", "CRITICAL"):
+            self.assertEqual(requiere_auditoria_selectiva(self._fp(opensearch_id=None, riesgo_ia=riesgo)),
+                             (True, "riesgo_alto"))
+
+    def test_no_depende_de_settings_ni_de_la_pk(self):
+        import inspect
+        fuente = inspect.getsource(_muestreo)
+        self.assertNotIn("SECRET_KEY", inspect.getsource(_muestreo._hash_unitario))
+        self.assertNotIn("django.conf", fuente)
+        self.assertNotIn("alert.pk", fuente)
+
+
+class MuestreoIdentificadorNoExpuestoTests(TestCase):
+    """El opensearch_id usado para el muestreo no aparece en HTML, mensajes ni logs."""
+
+    def setUp(self):
+        self.admin = User.objects.create_user("muX", password="p")
+        self.admin.perfilusuario.rol = "ADMIN"; self.admin.perfilusuario.save()
+        self.osid = _osid_en_muestra(True)
+        self.alerta = Alert.objects.create(
+            titulo="t", descripcion="AUD-MUESTRA-ESTABLE", estado="Pendiente",
+            estado_analisis="COMPLETED", veredicto_ia="FALSO_POSITIVO", riesgo_ia="LOW",
+            severidad=3, opensearch_id=self.osid,
+        )
+
+    def test_entra_por_muestra_sin_exponer_el_identificador(self):
+        self.client.force_login(self.admin)
+        with self.assertNoLogs(level="DEBUG"):
+            self.assertEqual(requiere_auditoria_selectiva(self.alerta), (True, "muestra_10pct"))
+            self.assertIn(self.alerta.pk, _auditoria_selectiva_ids())
+        with self.assertNoLogs("dashboard", level="DEBUG"):
+            cola = self.client.get(reverse("cola_auditoria_selectiva"))
+            hist = self.client.get(reverse("index"))
+        for r in (cola, hist):
+            self.assertEqual(r.status_code, 200)
+            self.assertNotContains(r, self.osid)
+        self.assertContains(cola, "AUD-MUESTRA-ESTABLE")
+
+    def test_revision_desde_la_cola_no_expone_el_identificador(self):
+        self.client.force_login(self.admin)
+        url = reverse("revisar_alerta", args=[self.alerta.id])
+        form = self.client.get(url + "?accion=confirmar&origen=auditoria_selectiva")
+        self.assertNotContains(form, self.osid)
+        r = self.client.post(url, {"accion": "confirmar", "motivo_categoria": "otro",
+                                   "origen": "auditoria_selectiva"}, follow=True)
+        self.assertNotContains(r, self.osid)
+        for m in r.context["messages"]:
+            self.assertNotIn(self.osid, str(m))
+        self.assertEqual(RevisionHumana.objects.get(alerta=self.alerta).origen, "AUDITORIA_SELECTIVA")
+        self.assertNotIn(self.alerta.pk, _auditoria_selectiva_ids())     # revisada: sale de la cola
+
+
+# Documentos ficticios ya normalizados (formato de sentria_backend._normalizar_hit).
+_AG_A, _AG_B = "731", "842"
+_DOCS_MULTI = {
+    "OS-A-HI": {"opensearch_id": "OS-A-HI", "agent_id": _AG_A, "level": 10, "groups": "syscheck", "rule_id": "550", "description": "A alto"},
+    "OS-A-LO": {"opensearch_id": "OS-A-LO", "agent_id": _AG_A, "level": 3, "groups": "syscheck", "rule_id": "551", "description": "A bajo"},
+    "OS-B-HI": {"opensearch_id": "OS-B-HI", "agent_id": _AG_B, "level": 12, "groups": "syscheck", "rule_id": "552", "description": "B alto"},
+    "OS-B-LO": {"opensearch_id": "OS-B-LO", "agent_id": _AG_B, "level": 3, "groups": "syscheck", "rule_id": "553", "description": "B bajo"},
+}
+
+
+def _indexer_honesto(osid, agent_id=None):
+    d = _DOCS_MULTI.get(osid)
+    if d is None or (agent_id is not None and d["agent_id"] != agent_id):
+        return None
+    return dict(d)
+
+
+def _indexer_ignora_filtro(osid, agent_id=None):
+    d = _DOCS_MULTI.get(osid)
+    return dict(d) if d else None
+
+
+class _ProvFalso(proveedores.ProveedorIA):
+    nombre = "falso"
+
+    def __init__(self):
+        self.prompts = []
+
+    def analizar(self, prompt):
+        self.prompts.append(prompt)
+        return proveedores.RespuestaProveedor(ok=False, texto="", modelo="", error="falso")
+
+
+class MigrarLegadoMultiagenteYAutorizacionesTests(TestCase):
+    """--agent-id filtra de verdad y las autorizaciones de migración y Gemini son independientes."""
+
+    def setUp(self):
+        _activo_real()
+        _activo_laptop()
+        asignar_agente(_AG_A, "SRV-01")
+        asignar_agente(_AG_B, "LAPTOP-01")
+        for osid, d in _DOCS_MULTI.items():
+            Alert.objects.create(titulo=osid, descripcion=d["description"], estado="Pendiente",
+                                 opensearch_id=osid, severidad=d["level"],
+                                 riesgo_ia="HIGH", explicacion_ia="análisis legado")
+        p = mock.patch("dashboard.ia.legado._buscar_documentos",
+                       lambda ids, agent_id=None: {i: dict(_DOCS_MULTI[i]) for i in ids if i in _DOCS_MULTI})
+        p.start()
+        self.addCleanup(p.stop)
+        self.logs = []
+        self.fabrica_llamada = []
+        self.prov = _ProvFalso()
+
+    def _fabrica(self, nombre):
+        self.fabrica_llamada.append(nombre)
+        return self.prov
+
+    def _correr(self, *, entorno, dry=False, gemini=False, get_uno=_indexer_honesto, agent_id=_AG_A, max_analisis=3):
+        with mock.patch.dict(os.environ, entorno):
+            for var in (GATE_ENV_VAR, GEMINI_GATE_ENV_VAR):
+                if var not in entorno:
+                    os.environ.pop(var, None)
+            return procesar_migracion_legado(
+                scan_limit=50, max_analisis=max_analisis, dry=dry, conf=not dry, agent_id=agent_id,
+                analizar_con_gemini=gemini, get_uno=get_uno, obtener_proveedor=self._fabrica,
+                log=self.logs.append,
+            )
+
+    def _intacta(self, osid):
+        a = Alert.objects.get(opensearch_id=osid)
+        return a.estado_analisis is None and a.legado_snapshot is None and a.riesgo_ia == "HIGH"
+
+    def _nada_escrito(self):
+        return all(self._intacta(osid) for osid in _DOCS_MULTI)
+
+    # --- autorizaciones ---
+    def test_dry_run_rechaza_analizar_con_gemini(self):
+        with self.assertRaises(CommandError):
+            self._correr(entorno={GATE_ENV_VAR: "1", GEMINI_GATE_ENV_VAR: "1"}, dry=True, gemini=True)
+        self.assertEqual(self.fabrica_llamada, [])
+        self.assertTrue(self._nada_escrito())
+
+    def test_dry_run_no_escribe_ni_llama(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1", GEMINI_GATE_ENV_VAR: "1"}, dry=True)
+        self.assertEqual(r["llamadas_reales"], 0)
+        self.assertEqual(self.fabrica_llamada, [])
+        self.assertTrue(self._nada_escrito())
+
+    def test_gate_gemini_no_implica_gate_migracion(self):
+        with self.assertRaises(CommandError):
+            self._correr(entorno={GEMINI_GATE_ENV_VAR: "1", "GEMINI_API_KEY": "x"}, gemini=True)
+        self.assertEqual(self.fabrica_llamada, [])
+        self.assertTrue(self._nada_escrito())
+
+    def test_flag_gemini_sin_gate_gemini_aborta_antes_de_escribir(self):
+        with self.assertRaises(CommandError):
+            self._correr(entorno={GATE_ENV_VAR: "1", "GEMINI_API_KEY": "x"}, gemini=True)
+        self.assertEqual(self.fabrica_llamada, [])
+        self.assertTrue(self._nada_escrito())
+
+    def test_gate_gemini_sin_flag_no_crea_proveedor(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1", GEMINI_GATE_ENV_VAR: "1", "GEMINI_API_KEY": "x"})
+        self.assertEqual(self.fabrica_llamada, [])
+        self.assertFalse(r["gemini_autorizado"])
+        self.assertEqual(r["llamadas_reales"], 0)
+
+    def test_solo_migracion_omite_no_elegibles_y_deja_intactas_las_elegibles(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1"})
+        self.assertEqual(self.fabrica_llamada, [])
+        self.assertEqual(r["migradas_omitidas"], 1)
+        self.assertEqual(r["requieren_gemini"], 1)
+        self.assertEqual(r["migradas"], 0)
+        lo = Alert.objects.get(opensearch_id="OS-A-LO")
+        self.assertEqual(lo.estado_analisis, "OMITIDO_POLITICA")
+        self.assertEqual(lo.legado_snapshot["riesgo_ia"], "HIGH")       # legado preservado
+        self.assertEqual(lo.legado_snapshot["explicacion_ia"], "análisis legado")
+        self.assertTrue(self._intacta("OS-A-HI"))                       # elegible: necesita Gemini
+
+    def test_ambas_autorizaciones_llaman_al_proveedor_con_tope(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1", GEMINI_GATE_ENV_VAR: "1", "GEMINI_API_KEY": "x"},
+                         gemini=True, max_analisis=99)
+        self.assertEqual(self.fabrica_llamada, ["gemini_developer"])
+        self.assertTrue(r["gemini_autorizado"])
+        self.assertLessEqual(r["llamadas_reales"], 3)          # tope absoluto
+        self.assertEqual(r["max_analisis"], 3)
+        self.assertEqual(len(self.prov.prompts), 1)            # sólo la elegible del agente A
+        self.assertEqual(r["llamadas_reales"], 1)
+        self.assertIsNotNone(Alert.objects.get(opensearch_id="OS-A-HI").legado_snapshot)
+
+    def test_max_analisis_cero_no_llama(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1", GEMINI_GATE_ENV_VAR: "1", "GEMINI_API_KEY": "x"},
+                         gemini=True, max_analisis=0)
+        self.assertEqual(r["llamadas_reales"], 0)
+        self.assertEqual(self.prov.prompts, [])
+        self.assertTrue(self._intacta("OS-A-HI"))
+
+    # --- multiagente ---
+    def test_indexer_recibe_el_filtro_de_agente(self):
+        vistos = []
+
+        def _espia(osid, agent_id=None):
+            vistos.append(agent_id)
+            return _indexer_honesto(osid, agent_id)
+        self._correr(entorno={GATE_ENV_VAR: "1"}, get_uno=_espia)
+        self.assertTrue(vistos)
+        self.assertTrue(all(a == _AG_A for a in vistos))
+
+    def test_agente_a_nunca_procesa_documentos_de_b(self):
+        for get_uno in (_indexer_honesto, _indexer_ignora_filtro):
+            self._correr(entorno={GATE_ENV_VAR: "1", GEMINI_GATE_ENV_VAR: "1", "GEMINI_API_KEY": "x"},
+                         gemini=True, get_uno=get_uno)
+            self.assertTrue(self._intacta("OS-B-HI"))
+            self.assertTrue(self._intacta("OS-B-LO"))
+
+    def test_documentos_de_otro_agente_se_rechazan_por_recomprobacion(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1"}, get_uno=_indexer_ignora_filtro)
+        self.assertEqual(r["rechazadas_otro_agente"], 2)
+        self.assertTrue(self._intacta("OS-B-HI"))
+        self.assertTrue(self._intacta("OS-B-LO"))
+
+    def test_agente_b_tampoco_toca_a(self):
+        self._correr(entorno={GATE_ENV_VAR: "1"}, agent_id=_AG_B, get_uno=_indexer_ignora_filtro)
+        self.assertTrue(self._intacta("OS-A-HI"))
+        self.assertTrue(self._intacta("OS-A-LO"))
+        self.assertEqual(Alert.objects.get(opensearch_id="OS-B-LO").estado_analisis, "OMITIDO_POLITICA")
+
+    def test_agent_id_no_aparece_en_salida(self):
+        r = self._correr(entorno={GATE_ENV_VAR: "1"}, get_uno=_indexer_ignora_filtro)
+        salida = " ".join(self.logs) + " " + json.dumps(
+            {k: v for k, v in r.items() if k != "diagnostico"}, default=str)
+        self.assertNotIn(_AG_A, salida)
+        self.assertNotIn(_AG_B, salida)
+
+
+class PlanificadorHonestoTests(TestCase):
+    """Recuperable no es apto: sólo lo elegible entra al pool utilizable."""
+
+    _DIAG = {
+        "legado_total": 61, "legado_con_opensearch_id": 14, "legado_sin_opensearch_id": 47,
+        "sin_documento": 0, "recuperables": 14, "recuperable_y_elegible": 1,
+        "recuperable_no_elegible": 13, "no_elegible_total": 13, "sin_documento_recuperable": 47,
+        "agente_bloqueado": 0, "sin_activo_asignado": 0,
+        "por_familia": {"syscheck": 10, "sshd": 4}, "por_familia_elegible": {"syscheck": 1},
+        "por_nivel": {}, "por_motivo_omision": {"NIVEL_NO_ELEGIBLE": 13}, "n_agentes_distintos": 1,
+    }
+
+    def test_no_elegibles_no_inflan_el_pool(self):
+        pools = pldata.pools_utilizables(self._DIAG)
+        self.assertEqual(sum(pools.values()), 1)
+        plan = pldata.construir_plan(pools)
+        self.assertEqual(sum(plan["asignado"].values()), 1)
+
+    def test_resumen_real_y_deficit(self):
+        real = pldata.resumen_real(self._DIAG, 1)
+        self.assertEqual((real["recuperables"], real["elegibles"], real["no_elegibles"],
+                          real["sin_documento_recuperable"], real["aprobados"]), (14, 1, 13, 47, 1))
+        self.assertEqual((real["deficit_min"], real["deficit_max"]), (139, 149))
+
+    def test_diag_con_error_no_rompe(self):
+        self.assertEqual(pldata.pools_utilizables({"error": "x"}), {})
+        self.assertEqual(pldata.resumen_real({"error": "x"}, 0)["deficit_min"], 140)
+
+    def test_diagnostico_separa_recuperable_de_elegible(self):
+        _activo_real()
+        asignar_agente(_AG_A, "SRV-01")
+        Alert.objects.create(titulo="t", descripcion="sin id", estado="Pendiente")
+        for osid in ("OS-A-HI", "OS-A-LO", "OS-BORRADO"):
+            Alert.objects.create(titulo="t", descripcion=osid, estado="Pendiente", opensearch_id=osid)
+        with mock.patch("dashboard.ia.legado._buscar_documentos",
+                        lambda ids, agent_id=None: {i: dict(_DOCS_MULTI[i]) for i in ids if i in _DOCS_MULTI}):
+            d = diagnosticar_legado()
+        self.assertEqual(d["recuperables"], 2)
+        self.assertEqual(d["recuperable_y_elegible"], 1)
+        self.assertEqual(d["no_elegible_total"], 1)
+        self.assertEqual(d["sin_documento_recuperable"], 2)      # 1 sin opensearch_id + 1 borrado
+        self.assertEqual(sum(pldata.pools_utilizables(d).values()), 1)
+
+    def test_vista_muestra_cifras_separadas_y_aclaracion(self):
+        u = User.objects.create_user("plan2", password="p")
+        self.client.force_login(u)
+        with mock.patch("dashboard.views.diagnosticar_legado", return_value=dict(self._DIAG)):
+            r = self.client.get(reverse("planificador_dataset"))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.context["disponibilidad"]["legado_recuperado"], 1)
+        self.assertEqual(r.context["real"]["no_elegibles"], 13)
+        self.assertContains(r, "Recuperable no significa apto para entrenamiento")
+        self.assertContains(r, "faltan 140–150")       # 0 aprobados en esta base de prueba
+
+
+class OrigenRevisionNoManipulableTests(TestCase):
+    """El origen lo decide el backend según flujo y rol; el cliente sólo puede pedirlo."""
+
+    def setUp(self):
+        self.analista = User.objects.create_user("orA", password="p")    # ANALISTA por señal
+        self.admin = User.objects.create_user("orB", password="p")
+        self.admin.perfilusuario.rol = "ADMIN"; self.admin.perfilusuario.save()
+        self.invitado = User.objects.create_user("orC", password="p")
+        self.invitado.perfilusuario.rol = "INVITADO"; self.invitado.perfilusuario.save()
+
+    def _alerta(self, **kw):
+        base = dict(titulo="t", descripcion="d", estado="Pendiente", estado_analisis="COMPLETED",
+                    veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW", severidad=3)
+        base.update(kw)
+        return Alert.objects.create(**base)
+
+    def _confirmar(self, user, alerta, origen=None, en_url=False):
+        self.client.force_login(user)
+        url = reverse("revisar_alerta", args=[alerta.id])
+        datos = {"accion": "confirmar", "motivo_categoria": "otro"}
+        if origen is not None:
+            if en_url:
+                url += f"?accion=confirmar&origen={origen}"
+            else:
+                datos["origen"] = origen
+        return self.client.post(url, datos)
+
+    def _corregir(self, user, alerta, origen=None):
+        self.client.force_login(user)
+        datos = {"correccion_veredicto": "FALSO_POSITIVO", "motivo_categoria": "otro", "nota": "n"}
+        if origen is not None:
+            datos["origen"] = origen
+        return self.client.post(reverse("corregir_veredicto", args=[alerta.id]), datos)
+
+    def _origen(self, alerta):
+        rev = RevisionHumana.objects.filter(alerta=alerta).first()
+        return rev.origen if rev else None
+
+    def test_sin_origen_es_operativa(self):
+        a = self._alerta()
+        self._confirmar(self.analista, a)
+        self.assertEqual(self._origen(a), "OPERATIVA")
+
+    def test_analista_no_puede_forzar_prueba_controlada_por_formulario(self):
+        a = self._alerta()
+        self._confirmar(self.analista, a, "prueba_controlada")
+        self.assertIsNone(self._origen(a))
+
+    def test_analista_no_puede_forzar_prueba_controlada_por_url(self):
+        a = self._alerta()
+        self._confirmar(self.analista, a, "prueba_controlada", en_url=True)
+        self.assertIsNone(self._origen(a))
+
+    def test_analista_no_puede_forzar_prueba_controlada_al_corregir(self):
+        a = self._alerta()
+        self._corregir(self.analista, a, "prueba_controlada")
+        self.assertIsNone(self._origen(a))
+
+    def test_admin_si_puede_registrar_prueba_controlada(self):
+        a = self._alerta()
+        self._confirmar(self.admin, a, "prueba_controlada")
+        self.assertEqual(self._origen(a), "PRUEBA_CONTROLADA")
+
+    def test_migracion_legado_nunca_desde_la_web(self):
+        for user in (self.analista, self.admin):
+            a = self._alerta()
+            self._confirmar(user, a, "migracion_legado")
+            self.assertIsNone(self._origen(a))
+            b = self._alerta()
+            self._corregir(user, b, "MIGRACION_LEGADO")
+            self.assertIsNone(self._origen(b))
+
+    def test_origen_desconocido_rechazado(self):
+        a = self._alerta()
+        self._confirmar(self.admin, a, "inventado")
+        self.assertIsNone(self._origen(a))
+
+    def test_auditoria_selectiva_solo_si_la_alerta_esta_en_esa_cola(self):
+        en_cola = self._alerta(veredicto_ia="FALSO_POSITIVO", severidad=10)
+        self._confirmar(self.analista, en_cola, "auditoria_selectiva")
+        self.assertEqual(self._origen(en_cola), "AUDITORIA_SELECTIVA")
+
+        fuera = self._alerta(veredicto_ia="REQUIERE_ATENCION", severidad=12)
+        self._confirmar(self.analista, fuera, "auditoria_selectiva")
+        self.assertEqual(self._origen(fuera), "OPERATIVA")
+
+    def test_auditoria_selectiva_al_corregir_desde_la_cola(self):
+        en_cola = self._alerta(veredicto_ia="FALSO_POSITIVO", riesgo_ia="HIGH")
+        self._corregir(self.analista, en_cola, "auditoria_selectiva")
+        self.assertEqual(self._origen(en_cola), "AUDITORIA_SELECTIVA")
+
+    def test_invitado_no_puede_revisar_con_ningun_origen(self):
+        a = self._alerta()
+        r = self._confirmar(self.invitado, a, "operativa")
+        self.assertNotEqual(r.status_code, 200)
+        self.assertIsNone(self._origen(a))
+
+    def test_post_sin_csrf_rechazado(self):
+        a = self._alerta()
+        c = Client(enforce_csrf_checks=True)
+        c.force_login(self.admin)
+        r = c.post(reverse("revisar_alerta", args=[a.id]),
+                   {"accion": "confirmar", "motivo_categoria": "otro", "origen": "prueba_controlada"})
+        self.assertEqual(r.status_code, 403)
+        self.assertIsNone(self._origen(a))
+
+    def test_pista_de_origen_en_formulario_solo_valores_conocidos(self):
+        a = self._alerta()
+        self.client.force_login(self.analista)
+        r = self.client.get(reverse("revisar_alerta", args=[a.id]) + "?accion=confirmar&origen=<x>")
+        self.assertEqual(r.context["origen_param"], "")

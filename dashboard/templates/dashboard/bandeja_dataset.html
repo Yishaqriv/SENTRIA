@@ -42,14 +42,17 @@
 <body>
 <div class="header">
     <h1>SENTRIA — Dataset de entrenamiento</h1>
-    <a href="{% url 'index' %}" class="btn-back">← Volver al dashboard</a>
+    <div style="display:flex; gap:10px;">
+        <a href="{% url 'planificador_dataset' %}" class="btn-back">📐 Planificador (dry-run)</a>
+        <a href="{% url 'index' %}" class="btn-back">← Volver al dashboard</a>
+    </div>
 </div>
 
 <div class="wrap">
     <div class="card">
         <h2>Bandeja de candidatos supervisados</h2>
         <p class="sub">
-            Se detectan automáticamente las alertas con revisión humana. La entrada se construye desde
+            Se detectan automáticamente las alertas con revisión de analista. La entrada se construye desde
             <code>contexto_ia_snapshot</code> + la evidencia segura ya congelada; la salida objetivo parte de
             la respuesta de la IA con el veredicto sustituido por la verdad de terreno. Nada se copia a mano.
             <b>No se genera JSONL definitivo ni se sube ningún archivo.</b>
@@ -101,7 +104,7 @@
                     </td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="10"><div class="empty">Todavía no hay alertas con revisión humana.</div></td></tr>
+                <tr><td colspan="10"><div class="empty">Todavía no hay alertas con revisión de analista.</div></td></tr>
                 {% endfor %}
             </tbody>
         </table>

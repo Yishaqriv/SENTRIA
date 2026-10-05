@@ -26,7 +26,7 @@ _ETIQUETA_MOTIVO = dict(RevisionHumana.MOTIVO_CHOICES)
 
 def registrar_revision(alerta, *, accion, motivo_categoria, autor,
                        veredicto_gt=None, riesgo_revisado=None, nota="",
-                       tocar_correccion=True):
+                       tocar_correccion=True, origen="OPERATIVA"):
     """
     Crea o actualiza la `RevisionHumana` de `alerta`.
 
@@ -38,11 +38,27 @@ def registrar_revision(alerta, *, accion, motivo_categoria, autor,
 
     `tocar_correccion=False` sólo para el backfill desde `correccion_*` ya
     existentes (no re-escribe fecha/motivo históricos).
+
+    `origen` es procedencia auditable (PRUEBA_CONTROLADA/OPERATIVA/
+    AUDITORIA_SELECTIVA/MIGRACION_LEGADO); no altera la verdad de terreno.
+
+    PROTECCIÓN DE APROBADO (3C/3D): si el candidato del dataset de esta alerta
+    ya está APROBADO, la verdad de terreno es inmutable — se rechaza CUALQUIER
+    nueva revisión (incluida EXCLUIDA). La única salida de un APROBADO es la
+    exclusión explícita y auditada en `dataset.revisar_candidato`.
     """
+    cand = getattr(alerta, "candidato_dataset", None)
+    if cand is not None and cand.estado == "APROBADO":
+        raise ValueError(
+            "esta alerta ya tiene un candidato de dataset APROBADO: la verdad de terreno "
+            "es inmutable. Para retirarla, use la exclusión auditada del dataset."
+        )
     if accion not in ACCIONES:
         raise ValueError(f"acción de revisión inválida: {accion!r}")
     if motivo_categoria not in MOTIVOS:
         raise ValueError(f"motivo_categoria inválido: {motivo_categoria!r}")
+    if origen not in dict(RevisionHumana.ORIGEN_CHOICES):
+        raise ValueError(f"origen inválido: {origen!r}")
     if alerta.estado_analisis != "COMPLETED":
         raise ValueError("solo se revisan alertas con análisis COMPLETED")
     nota = (nota or "").strip()
@@ -68,6 +84,7 @@ def registrar_revision(alerta, *, accion, motivo_categoria, autor,
                 veredicto_verdad_terreno=veredicto_gt,
                 riesgo_revisado=riesgo_revisado,
                 motivo_categoria=motivo_categoria,
+                origen=origen,
                 nota=nota,
                 autor=autor if getattr(autor, "pk", None) else None,
             ),
@@ -98,7 +115,7 @@ def registrar_revision(alerta, *, accion, motivo_categoria, autor,
     return rev
 
 
-def sincronizar_revision_desde_correccion(alerta, *, motivo_categoria="otro"):
+def sincronizar_revision_desde_correccion(alerta, *, motivo_categoria="otro", origen="OPERATIVA"):
     """
     Backfill: crea una `RevisionHumana` CORREGIDA a partir de `correccion_*` ya
     presentes en la alerta (flujo antiguo), SIN tocar esos campos históricos.
@@ -110,6 +127,8 @@ def sincronizar_revision_desde_correccion(alerta, *, motivo_categoria="otro"):
         return None
     if motivo_categoria not in MOTIVOS:
         motivo_categoria = "otro"
+    if origen not in dict(RevisionHumana.ORIGEN_CHOICES):
+        origen = "OPERATIVA"
     return registrar_revision(
         alerta,
         accion="CORREGIDA",
@@ -119,4 +138,5 @@ def sincronizar_revision_desde_correccion(alerta, *, motivo_categoria="otro"):
         riesgo_revisado=None,
         nota=(alerta.correccion_motivo or "").strip(),
         tocar_correccion=False,
+        origen=origen,
     )

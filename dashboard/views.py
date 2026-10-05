@@ -25,8 +25,11 @@ from .mantenimiento import crear_ventana, cancelar_ventana
 from .revision import registrar_revision, MOTIVOS as MOTIVOS_REVISION, RIESGOS as RIESGOS_REVISION
 from . import dataset as ds
 from .dataset import sincronizar_todos, vista_bandeja
-from .metricas_eval import matriz_confusion, resumen_revisiones
+from .metricas_eval import matriz_confusion, resumen_revisiones, resumen_por_origen
 from .ia.contrato import CVSS_ENUMS, RIESGOS as CONTRATO_RIESGOS
+from .ia.muestreo import requiere_auditoria_selectiva, POLITICA_MUESTREO_VERSION
+from .ia.legado import diagnosticar_legado
+from . import planificador_dataset as pd
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 from sentria_backend import get_latest_alerts, get_alert_by_id
@@ -54,6 +57,63 @@ Q_PENDIENTES = (
     Q(estado_analisis__in=['PENDING', 'OMITIDO_POLITICA', 'ANALISIS_FALLIDO'])
     | Q(estado_analisis__isnull=True)
 )
+# --- Colas más claras (3C/3D): separan lo que es trabajo pendiente REAL del
+# analista de lo que no lo es (legado, omitido por política). ---
+Q_PENDIENTES_TECNICOS = Q(estado_analisis__in=['PENDING', 'ANALISIS_FALLIDO'])
+Q_OMITIDAS = Q(estado_analisis='OMITIDO_POLITICA')
+Q_LEGADO = Q(estado_analisis__isnull=True)
+
+# Origen auditable de una revisión: lo decide el BACKEND. El cliente sólo puede
+# *pedir* uno (parámetro 'origen'); la petición se valida contra el flujo real
+# y el rol. MIGRACION_LEGADO nunca se asigna desde la web: sólo el proceso de
+# migración autorizado.
+ORIGENES_PEDIBLES = ('operativa', 'auditoria_selectiva', 'prueba_controlada')
+
+
+def _en_auditoria_selectiva(alerta):
+    """True si la alerta está HOY en la cola de auditoría selectiva."""
+    if alerta.estado_analisis != 'COMPLETED' or alerta.veredicto_ia != 'FALSO_POSITIVO':
+        return False
+    if RevisionHumana.objects.filter(alerta=alerta).exists():
+        return False
+    return requiere_auditoria_selectiva(alerta)[0]
+
+
+def _resolver_origen(request, alerta):
+    """
+    -> (origen, error). Con `error`, la petición se rechaza sin registrar nada.
+    - vacío / 'operativa'      -> OPERATIVA.
+    - 'auditoria_selectiva'    -> AUDITORIA_SELECTIVA sólo si la alerta está
+                                  realmente en esa cola; si ya no lo está
+                                  (enlace viejo), OPERATIVA.
+    - 'prueba_controlada'      -> sólo ADMIN; cualquier otro rol se rechaza.
+    - cualquier otro valor (incluido 'migracion_legado') -> rechazado.
+    """
+    pedido = (request.POST.get('origen') or request.GET.get('origen') or '').strip().lower()
+    if pedido in ('', 'operativa'):
+        return 'OPERATIVA', None
+    if pedido == 'auditoria_selectiva':
+        return ('AUDITORIA_SELECTIVA' if _en_auditoria_selectiva(alerta) else 'OPERATIVA'), None
+    if pedido == 'prueba_controlada':
+        if usuario_tiene_rol(request.user, ['ADMIN']):
+            return 'PRUEBA_CONTROLADA', None
+        return None, "Solo un administrador puede registrar una revisión como prueba controlada."
+    return None, "Origen de revisión no permitido desde el dashboard."
+
+
+def _origen_param(request):
+    """Pista de origen para el formulario (sólo valores conocidos; no decide nada)."""
+    pedido = (request.GET.get('origen') or '').strip().lower()
+    return pedido if pedido in ORIGENES_PEDIBLES else ''
+
+
+def _auditoria_selectiva_ids():
+    """PKs de FALSO_POSITIVO originales de la IA, sin revisión, que entran a la
+    auditoría selectiva (nivel alto, riesgo alto o muestra estable del 10%)."""
+    candidatas = Alert.objects.filter(
+        estado_analisis='COMPLETED', veredicto_ia='FALSO_POSITIVO', revision_humana__isnull=True,
+    ).only('id', 'severidad', 'riesgo_ia', 'opensearch_id')
+    return [a.pk for a in candidatas if requiere_auditoria_selectiva(a)[0]]
 
 
 def _aplicar_filtros(request, alertas):
@@ -126,6 +186,10 @@ def _contadores():
         'n_pendientes_analisis': base.filter(
             Q(estado_analisis='PENDING') | Q(estado_analisis__isnull=True)
         ).count(),
+        # Colas 3C/3D: el análisis legado NUNCA cuenta como pendiente ordinario.
+        'n_pendientes_tecnicos': base.filter(Q_PENDIENTES_TECNICOS).count(),
+        'n_legado': base.filter(Q_LEGADO).count(),
+        'n_auditoria_selectiva': len(_auditoria_selectiva_ids()),
         # Riesgo IA
         'n_critical': base.filter(riesgo_ia='CRITICAL').count(),
         'n_high': base.filter(riesgo_ia='HIGH').count(),
@@ -168,7 +232,7 @@ def cola_historial(request):
     return _render_cola(
         request, Alert.objects.all(),
         cola='historial', titulo='Historial completo',
-        subtitulo='Todas las alertas registradas, con su veredicto de IA y sus correcciones.',
+        subtitulo='Todas las alertas registradas, con su clasificación de IA y sus correcciones.',
     )
 
 
@@ -187,7 +251,7 @@ def cola_falsos_positivos(request):
         request, Alert.objects.filter(Q_EFECTIVO_FP),
         cola='fp', titulo='Falsos positivos',
         subtitulo='Veredicto EFECTIVO = falso positivo (corrección humana si existe, si no el de la IA). '
-                  'El veredicto original de la IA sigue disponible con el filtro «veredicto».',
+                  'La clasificación original de la IA sigue disponible con el filtro «veredicto».',
     )
 
 
@@ -204,10 +268,51 @@ def cola_falsos_positivos_ia(request):
 
 @login_required
 def cola_pendientes(request):
+    """Pendientes y fallidas: trabajo técnico REAL del analista. El análisis
+    legado y lo omitido por política tienen sus propias colas (no son "trabajo
+    pendiente ordinario")."""
     return _render_cola(
-        request, Alert.objects.filter(Q_PENDIENTES),
-        cola='pendientes', titulo='Pendientes, omitidos y fallos',
-        subtitulo='Pendientes de análisis, omitidos por política y fallos de análisis. Todos visibles y revisables.',
+        request, Alert.objects.filter(Q_PENDIENTES_TECNICOS),
+        cola='pendientes', titulo='Pendientes y fallidas',
+        subtitulo='Pendientes de análisis y fallos de análisis del contrato IA actual. '
+                  'No incluye análisis legado ni alertas omitidas por política (ver sus propias colas).',
+    )
+
+
+@login_required
+def cola_omitidas(request):
+    return _render_cola(
+        request, Alert.objects.filter(Q_OMITIDAS),
+        cola='omitidas', titulo='Omitidas por política',
+        subtitulo='No se enviaron al modelo de IA (ruido confirmado, nivel no elegible, sin contexto de activo o regla excluida). '
+                  'No son un fallo de análisis.',
+    )
+
+
+@login_required
+def cola_legado(request):
+    return _render_cola(
+        request, Alert.objects.filter(Q_LEGADO),
+        cola='legado', titulo='Análisis Legado - Pendiente de migrar al flujo IA actual',
+        subtitulo='Son anteriores al contrato de IA (Sprint 2A+) y NO cuentan como trabajo pendiente ordinario del analista.',
+    )
+
+
+@login_required
+def cola_auditoria_selectiva(request):
+    """
+    Auditoría selectiva de falsos positivos de la IA (política versionada,
+    determinista — ver `dashboard.ia.muestreo`). El analista no revisa todos
+    los FALSO_POSITIVO: sólo nivel alto, riesgo alto o una muestra estable del
+    10%. Una alerta ya revisada desaparece de aquí automáticamente.
+    """
+    ids = _auditoria_selectiva_ids()
+    return _render_cola(
+        request, Alert.objects.filter(pk__in=ids),
+        cola='auditoria_selectiva', titulo='Auditoría selectiva IA',
+        subtitulo=f'Falsos positivos originales de la IA seleccionados por nivel ≥10, riesgo HIGH/CRITICAL, '
+                  f'o una muestra estable del 10% (política v{POLITICA_MUESTREO_VERSION}, determinista, '
+                  f'nunca ORDER BY RAND()). Una alerta ya revisada no vuelve a aparecer aquí.',
     )
 
 
@@ -302,8 +407,16 @@ def corregir_veredicto(request, alert_id):
     if not alerta.analisis_completado:
         messages.error(
             request,
-            "Solo se puede corregir el veredicto de una alerta con análisis "
+            "Solo se puede corregir la clasificación de una alerta con análisis "
             "completado. Las alertas sin análisis nuevo no se clasifican a mano."
+        )
+        return redirect('index')
+
+    if alerta.dataset_aprobado:
+        messages.error(
+            request,
+            "Esta alerta ya tiene un candidato de dataset APROBADO: la verdad de terreno es "
+            "inmutable. Para retirarla, use la exclusión auditada desde la ficha del candidato."
         )
         return redirect('index')
 
@@ -312,28 +425,37 @@ def corregir_veredicto(request, alert_id):
         categoria = request.POST.get('motivo_categoria', '')
         nota = request.POST.get('nota', request.POST.get('correccion_motivo', '')).strip()
         riesgo_rev = request.POST.get('riesgo_revisado', '') or None
+        origen, error_origen = _resolver_origen(request, alerta)
+        if error_origen:
+            messages.error(request, error_origen)
+            return redirect('index')
         if correccion not in VEREDICTOS_VALIDOS:
-            messages.error(request, "Selecciona un veredicto de corrección válido.")
+            messages.error(request, "Selecciona una clasificación de corrección válida.")
             return redirect('corregir_veredicto', alert_id=alerta.id)
         if categoria not in MOTIVOS_REVISION:
             messages.error(request, "Elige una categoría de motivo.")
             return redirect('corregir_veredicto', alert_id=alerta.id)
         if riesgo_rev is not None and riesgo_rev not in RIESGOS_REVISION:
             riesgo_rev = None
-        registrar_revision(
-            alerta, accion='CORREGIDA', motivo_categoria=categoria, autor=request.user,
-            veredicto_gt=correccion, riesgo_revisado=riesgo_rev, nota=nota,
-        )
+        try:
+            registrar_revision(
+                alerta, accion='CORREGIDA', motivo_categoria=categoria, autor=request.user,
+                veredicto_gt=correccion, riesgo_revisado=riesgo_rev, nota=nota, origen=origen,
+            )
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect('index')
         messages.success(
             request,
-            f"Veredicto corregido a «{dict(Alert.VEREDICTO_CHOICES).get(correccion, correccion)}» "
-            f"y registrado como verdad de terreno.")
+            f"Clasificación corregida a «{dict(Alert.VEREDICTO_CHOICES).get(correccion, correccion)}» "
+            f"y registrada como verdad de terreno.")
         return redirect('index')
 
     return render(request, 'dashboard/corregir_veredicto.html', {
         'alerta': alerta,
         'motivos': RevisionHumana.MOTIVO_CHOICES,
         'riesgos': RevisionHumana.RIESGO_CHOICES,
+        'origen_param': _origen_param(request),
     })
 
 
@@ -354,21 +476,37 @@ def revisar_alerta(request, alert_id):
     accion_param = (request.GET.get('accion') or request.POST.get('accion') or 'confirmar').lower()
     accion = 'EXCLUIDA' if accion_param.startswith('exclu') else 'CONFIRMADA'
 
+    if alerta.dataset_aprobado:
+        messages.error(
+            request,
+            "Esta alerta ya tiene un candidato de dataset APROBADO: la verdad de terreno es "
+            "inmutable. Para retirarla, use la exclusión auditada desde la ficha del candidato."
+        )
+        return redirect('index')
+
     if request.method == 'POST':
         categoria = request.POST.get('motivo_categoria', '')
         nota = request.POST.get('nota', '').strip()
         riesgo_rev = request.POST.get('riesgo_revisado', '') or None
+        origen, error_origen = _resolver_origen(request, alerta)
+        if error_origen:
+            messages.error(request, error_origen)
+            return redirect('index')
         if categoria not in MOTIVOS_REVISION:
             messages.error(request, "Elige una categoría de motivo.")
             return redirect(f"{request.path}?accion={accion_param}")
         if riesgo_rev is not None and riesgo_rev not in RIESGOS_REVISION:
             riesgo_rev = None
-        registrar_revision(
-            alerta, accion=accion, motivo_categoria=categoria, autor=request.user,
-            riesgo_revisado=riesgo_rev, nota=nota,
-        )
+        try:
+            registrar_revision(
+                alerta, accion=accion, motivo_categoria=categoria, autor=request.user,
+                riesgo_revisado=riesgo_rev, nota=nota, origen=origen,
+            )
+        except ValueError as exc:
+            messages.error(request, str(exc))
+            return redirect('index')
         if accion == 'CONFIRMADA':
-            messages.success(request, "Veredicto de la IA confirmado como verdad de terreno.")
+            messages.success(request, "Clasificación de la IA confirmada como verdad de terreno.")
         else:
             messages.success(request, "Alerta excluida del dataset (evidencia insuficiente).")
         return redirect('index')
@@ -377,6 +515,7 @@ def revisar_alerta(request, alert_id):
         'alerta': alerta, 'accion': accion,
         'motivos': RevisionHumana.MOTIVO_CHOICES,
         'riesgos': RevisionHumana.RIESGO_CHOICES,
+        'origen_param': _origen_param(request),
     })
 
 
@@ -436,7 +575,7 @@ def exportar_csv(request):
     writer = csv.writer(response)
     writer.writerow([
         'ID', 'Timestamp', 'Descripción', 'Severidad', 'Activo lógico', 'Tipo activo',
-        'Criticidad', 'SO', 'Estado análisis', 'Motivo omisión', 'Veredicto IA (original)',
+        'Criticidad', 'SO', 'Estado análisis', 'Motivo omisión', 'Clasificación IA (original)',
         'Riesgo IA', 'Explicación IA', 'Veredicto efectivo', 'Corrección (humano)',
         'Proveedor', 'Modelo', 'Estado triage', 'Fuente', 'Registrado en',
     ])
@@ -529,6 +668,7 @@ def metricas(request):
     """
     m = matriz_confusion()
     rev = resumen_revisiones()
+    origenes = resumen_por_origen()
 
     metricas_pct = {
         'fpr': _pct(m['fpr']), 'fnr': _pct(m['fnr']),
@@ -536,11 +676,14 @@ def metricas(request):
         'accuracy': _pct(m['accuracy']),
     }
     n = m['total_etiquetado']
+    n_no_representativo = sum(f['n'] for f in origenes if not f['representativo'])
 
     return render(request, 'dashboard/metricas.html', {
         'm': m,
         'metricas_pct': metricas_pct,
         'rev': rev,
+        'origenes': origenes,
+        'n_no_representativo': n_no_representativo,
         'n_etiquetado': n,
         'muestra_insuficiente': n < 30,
         'total_alertas': Alert.objects.count(),
@@ -570,6 +713,42 @@ def bandeja_dataset(request):
     }
     return render(request, 'dashboard/bandeja_dataset.html', {
         'filas': filas, 'resumen': resumen,
+    })
+
+
+@requiere_rol('ADMIN', 'ANALISTA')
+def planificador_dataset(request):
+    """
+    Planificador SOLO dry-run de la fábrica de escenarios acelerada (3C/3D,
+    fase 9). No genera eventos, no llama a Gemini/Vertex, no escribe JSONL.
+    Combina conteos y categorías YA seguras: legado recuperable (consulta de
+    solo lectura a Wazuh), capacidad estimada de escenarios Ubuntu
+    controlados, y el futuro agente Windows LAPTOP-01 (hoy en 0, pendiente).
+
+    El plan sólo usa el pool UTILIZABLE (legado recuperable Y elegible). La
+    capacidad estimada de laboratorio se muestra aparte y nunca se suma.
+    """
+    try:
+        diag_legado = diagnosticar_legado()
+    except Exception as exc:
+        diag_legado = {"error": f"{type(exc).__name__}: no se pudo consultar Wazuh (solo lectura)"}
+
+    n_linux = ActivoLogico.objects.filter(activo=True, os_family='linux').count()
+    familias_legado = list((diag_legado or {}).get('por_familia', {}).keys()) or ['sin_grupo']
+    capacidad_ubuntu_estimada = sum(pd.pools_ubuntu_controlado(n_linux, familias_legado).values())
+
+    pools = pd.pools_utilizables(diag_legado)
+    plan = pd.construir_plan(pools)
+    disponibilidad = pd.resumen_por_origen(pools)
+    real = pd.resumen_real(diag_legado, CandidatoDataset.objects.filter(estado='APROBADO').count())
+
+    return render(request, 'dashboard/planificador_dataset.html', {
+        'diag_legado': diag_legado,
+        'disponibilidad': disponibilidad,
+        'plan': plan,
+        'real': real,
+        'capacidad_ubuntu_estimada': capacidad_ubuntu_estimada,
+        'n_linux': n_linux,
     })
 
 
@@ -645,7 +824,8 @@ def candidato_detalle(request, ejemplo_id):
         'ok_para_revision': ok_rev,
         'errores_revision': errores_rev,
         'es_completador': es_completador,
-        'puede_segunda_revision': cand.estado in ('LISTO_PARA_REVISION', 'DEVUELTO'),
+        'puede_segunda_revision': cand.estado in ('LISTO_PARA_REVISION', 'DEVUELTO', 'APROBADO'),
+        'solo_exclusion': cand.estado == 'APROBADO',
         'revisiones': cand.revisiones.select_related('autor').all(),
     })
 

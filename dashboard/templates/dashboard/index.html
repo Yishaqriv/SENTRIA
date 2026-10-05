@@ -248,6 +248,37 @@
         .ab-detalle  { background: rgba(120,140,168,0.12); color: #9ab8d8; border-color: rgba(120,140,168,0.32); }
         .ab-corregir { background: rgba(40,100,200,0.12); color: #70b0f0; border-color: rgba(40,100,200,0.35); }
         .ab-reintentar { background: rgba(160,80,192,0.14); color: #cc90ee; border-color: rgba(160,80,192,0.4); }
+
+        /* Menú compacto "Acciones ▾" (Sprint 3C/3D) */
+        .actions-dropdown { position: relative; display: inline-block; }
+        .act-menu-btn {
+            background: rgba(120,140,168,0.12); color: #9ab8d8; border: 1px solid rgba(120,140,168,0.32);
+            border-radius: 6px; padding: 6px 12px; font-size: 12px; font-weight: 700;
+            cursor: pointer; white-space: nowrap;
+        }
+        .act-menu-btn:hover { opacity: .8; }
+        .act-menu-btn[aria-expanded="true"] { background: rgba(120,140,168,0.26); color: #e8f2ff; }
+        .actions-menu {
+            display: none; position: fixed; z-index: 500; min-width: 210px;
+            background: #0e1a2e; border: 1px solid rgba(255,255,255,0.14);
+            border-radius: 8px; padding: 6px; box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+        }
+        .actions-menu.open { display: flex; flex-direction: column; gap: 2px; }
+        .am-item {
+            display: block; width: 100%; text-align: left; box-sizing: border-box;
+            background: transparent; border: none; color: #c8daf0;
+            font-size: 12.5px; font-weight: 600; padding: 8px 10px; border-radius: 5px;
+            cursor: pointer; text-decoration: none;
+        }
+        .am-item:hover, .am-item:focus { background: rgba(255,255,255,0.08); color: #f0f6ff; outline: none; }
+        .am-danger:hover, .am-danger:focus { background: rgba(224,88,64,0.18); color: #f0a68c; }
+
+        /* Insignia de dataset aprobado (inmutable) */
+        .badge-aprobado {
+            display: inline-block; padding: 3px 9px; margin-left: 4px;
+            border-radius: 6px; font-size: 11px; font-weight: 700;
+            background: rgba(20,160,80,0.16); color: #5fd88f; border: 1px solid rgba(20,160,80,0.4);
+        }
         .evi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 4px 14px; margin-top:6px; }
         .evi-grid span { font-size: 12.5px; color: #b8d0ea; }
         .evi-grid b { color: #8fb0d8; }
@@ -286,8 +317,8 @@
 
         /* ── Veredicto IA ─────────────────────────────────── */
         .verdict-pill {
-            display: inline-block; padding: 4px 11px;
-            border-radius: 6px; font-size: 12px; font-weight: 700;
+            display: inline-block; padding: 5px 13px;
+            border-radius: 7px; font-size: 13px; font-weight: 800;
             letter-spacing: 0.03em; white-space: nowrap;
         }
         .vp-atencion { background: rgba(224,88,64,0.16);  color: #f0906c; border: 1px solid rgba(224,88,64,0.38); }
@@ -296,7 +327,8 @@
         .vp-fallido  { background: rgba(160,80,192,0.16); color: #cc90ee; border: 1px solid rgba(160,80,192,0.4); }
         .vp-corr     { background: rgba(255,255,255,0.06); color: #a0bcd8; border: 1px dashed rgba(255,255,255,0.22); }
         .vp-orig     { font-size: 11px; color: #5878a0; text-decoration: line-through; margin-left: 4px; }
-        .vp-legado   { background: rgba(90,105,130,0.14); color: #93a6c4; border: 1px dashed rgba(140,160,190,0.4); }
+        .vp-legado   { background: rgba(90,105,130,0.14); color: #93a6c4; border: 1px dashed rgba(140,160,190,0.4);
+                       white-space: normal; max-width: 220px; line-height: 1.3; }
         .legacy-tag  { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
                        color: #7d90b0; border: 1px dashed rgba(140,160,190,0.4); border-radius: 4px; padding: 1px 5px; margin-left: 4px; }
         .legacy-note { color: #93a6c4; border-left: 3px solid rgba(140,160,190,0.4); padding-left: 10px; }
@@ -430,8 +462,15 @@
         Requiere atención <span class="badge">{{ n_efectivo_atencion }}</span></a>
     <a href="{% url 'cola_falsos_positivos' %}" class="cola-tab {% if cola_activa == 'fp' %}active{% endif %}">
         Falsos positivos <span class="badge">{{ n_efectivo_falso_positivo }}</span></a>
+    <a href="{% url 'cola_auditoria_selectiva' %}" class="cola-tab {% if cola_activa == 'auditoria_selectiva' %}active{% endif %}">
+        Auditoría selectiva IA <span class="badge">{{ n_auditoria_selectiva }}</span></a>
     <a href="{% url 'cola_pendientes' %}" class="cola-tab {% if cola_activa == 'pendientes' %}active{% endif %}">
-        Pendientes / omitidos / fallos <span class="badge">{{ n_pendientes_analisis|add:n_omitidas|add:n_fallidas }}</span></a>
+        Pendientes y fallidas <span class="badge">{{ n_pendientes_tecnicos }}</span></a>
+    <a href="{% url 'cola_omitidas' %}" class="cola-tab {% if cola_activa == 'omitidas' %}active{% endif %}">
+        Omitidas por política <span class="badge">{{ n_omitidas }}</span></a>
+    <a href="{% url 'cola_legado' %}" class="cola-tab {% if cola_activa == 'legado' %}active{% endif %}"
+       title="Análisis Legado - Pendiente de migrar al flujo IA actual">
+        Análisis legado <span class="badge">{{ n_legado }}</span></a>
     <a href="{% url 'index' %}" class="cola-tab {% if cola_activa == 'historial' %}active{% endif %}">
         Historial completo <span class="badge">{{ total }}</span></a>
 </div>
@@ -480,7 +519,7 @@
     </div>
 </div>
 <p style="padding: 4px 36px 0; margin: 0; font-size: 11px; color: #3a5878;">
-    Contadores <b>IA</b> = veredicto original del modelo. Contadores <b>efectivo</b> = con la corrección humana aplicada.
+    Contadores <b>IA</b> = clasificación original del modelo. Contadores <b>efectivo</b> = con la corrección del analista aplicada.
 </p>
 
 <!-- Filtros (se mantienen en la cola actual) -->
@@ -501,7 +540,7 @@
         </select>
     </div>
     <div class="fg">
-        <label>Veredicto IA</label>
+        <label>Clasificación IA</label>
         <select name="veredicto">
             <option value="">Todos</option>
             <option value="REQUIERE_ATENCION" {% if filtro_veredicto == 'REQUIERE_ATENCION' %}selected{% endif %}>Requiere atención</option>
@@ -582,10 +621,10 @@
             <th>Activo</th>
             <th>Sev.</th>
             <th>Fecha</th>
-            <th>Veredicto IA</th>
+            <th>Clasificación IA</th>
             <th>Riesgo IA</th>
             <th>Explicación IA</th>
-            <th>Revisión humana</th>
+            <th>Revisión Analista</th>
             <th>Acciones</th>
         </tr>
     </thead>
@@ -627,7 +666,7 @@
 
             <td>
                 {% if alert.analisis_legado %}
-                    <span class="verdict-pill vp-legado" title="Alerta anterior al contrato de IA. No es un resultado del contrato nuevo.">Análisis legado</span>
+                    <span class="verdict-pill vp-legado" title="Alerta anterior al contrato de IA. No es un resultado del contrato nuevo.">Análisis Legado - Pendiente de migrar al flujo IA actual</span>
                 {% elif alert.analisis_fallido %}
                     <span class="verdict-pill vp-fallido">⚠ Fallo de análisis</span>
                 {% elif alert.omitido_por_politica %}
@@ -642,6 +681,7 @@
                     <span class="verdict-pill vp-pendiente">Pendiente de análisis</span>
                 {% endif %}
                 {% if alert.tiene_correccion_humana %}<span class="verdict-pill vp-corr">✎ corregido</span>{% endif %}
+                {% if alert.dataset_aprobado %}<span class="badge-aprobado" title="Salida supervisada, snapshot y aprobación inmutables">🔒 Dataset aprobado</span>{% endif %}
                 <button type="button" class="detail-toggle" onclick="toggleDetail({{ alert.id }})" id="dt-btn-{{ alert.id }}">detalle ↓</button>
             </td>
 
@@ -691,16 +731,30 @@
                 {% endif %}
             </td>
 
-            <td style="white-space:nowrap;">
-                <button type="button" class="act-btn ab-detalle" onclick="toggleDetail({{ alert.id }})">Ver detalle</button>
-                {% if alert.analisis_completado and request.user|tiene_rol:"ADMIN,ANALISTA" %}
-                    <a href="{% url 'revisar_alerta' alert.id %}?accion=confirmar" class="act-btn ab-corregir">Confirmar veredicto IA</a>
-                    <a href="{% url 'corregir_veredicto' alert.id %}" class="act-btn ab-corregir">Corregir veredicto IA</a>
-                    <a href="{% url 'revisar_alerta' alert.id %}?accion=excluir" class="act-btn ab-reintentar">Excluir del dataset</a>
-                {% endif %}
-                {% if alert.analisis_fallido and request.user|tiene_rol:"ADMIN,ANALISTA" %}
-                    <a href="{% url 'reintentar_analisis' alert.id %}" class="act-btn ab-reintentar">Reintentar análisis</a>
-                {% endif %}
+            <td class="acciones-cell">
+                <div class="actions-dropdown">
+                    <button type="button" class="act-menu-btn" aria-haspopup="true" aria-expanded="false"
+                            id="am-btn-{{ alert.id }}" onclick="toggleActionsMenu(event, {{ alert.id }})">
+                        Acciones ▾
+                    </button>
+                    <div class="actions-menu" id="am-menu-{{ alert.id }}" role="menu" aria-labelledby="am-btn-{{ alert.id }}">
+                        <button type="button" class="am-item" role="menuitem"
+                                onclick="closeAllActionsMenus(); toggleDetail({{ alert.id }});">Ver detalle</button>
+                        {% if alert.analisis_completado and not alert.dataset_aprobado and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+                        <a class="am-item" role="menuitem" href="{% url 'revisar_alerta' alert.id %}?accion=confirmar{% if cola_activa == 'auditoria_selectiva' %}&origen=auditoria_selectiva{% endif %}">Confirmar clasificación IA</a>
+                        <a class="am-item" role="menuitem" href="{% url 'corregir_veredicto' alert.id %}{% if cola_activa == 'auditoria_selectiva' %}?origen=auditoria_selectiva{% endif %}">Corregir clasificación IA</a>
+                        {% endif %}
+                        {% if alert.analisis_fallido and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+                        <a class="am-item" role="menuitem" href="{% url 'reintentar_analisis' alert.id %}">Reintentar análisis</a>
+                        {% endif %}
+                        {% if alert.candidato_dataset %}
+                        <a class="am-item" role="menuitem" href="{% url 'candidato_detalle' alert.candidato_dataset.ejemplo_id %}">Ver estado del dataset</a>
+                        {% endif %}
+                        {% if alert.analisis_completado and not alert.dataset_aprobado and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+                        <a class="am-item am-danger" role="menuitem" href="{% url 'revisar_alerta' alert.id %}?accion=excluir">Excluir del dataset</a>
+                        {% endif %}
+                    </div>
+                </div>
             </td>
         </tr>
 
@@ -751,12 +805,12 @@
 
                     {% if alert.analisis_legado %}
                     <div class="full legacy-note">
-                        <h4>Análisis legado</h4>
+                        <h4>Análisis Legado - Pendiente de migrar al flujo IA actual</h4>
                         Alerta <b>anterior al contrato de IA</b> (Sprint 2A+). El riesgo y la explicación que se
                         muestran vienen del flujo antiguo de Gemini y <b>no</b> siguen el contrato nuevo
-                        (CVSS v3, veredicto binario FALSO_POSITIVO/REQUIERE_ATENCION, evidencia faltante).
-                        No se han reinterpretado ni modificado. Cuando esta alerta se re-ingiere o se
-                        reclasifica, pasa al contrato nuevo.<br>
+                        (CVSS v3, clasificación binaria FALSO_POSITIVO/REQUIERE_ATENCION, evidencia faltante).
+                        No se han reinterpretado ni modificado, y <b>no cuentan como trabajo pendiente ordinario</b>
+                        del analista. Cuando esta alerta se migra al flujo IA actual, pasa al contrato nuevo.<br>
                         <b>Triage histórico:</b> {{ alert.estado }}
                     </div>
                     {% elif alert.omitido_por_politica %}
@@ -814,14 +868,21 @@
 
                     {% if alert.tiene_correccion_humana %}
                     <div class="corr-note">
-                        <b>Corrección humana:</b> el veredicto vigente es
+                        <b>Corrección del analista:</b> la clasificación vigente es
                         <b>{{ alert.get_correccion_veredicto_display }}</b>.
-                        Veredicto original de la IA:
+                        Clasificación original de la IA:
                         <b>{% if alert.veredicto_ia %}{{ alert.get_veredicto_ia_display }}{% else %}—{% endif %}</b>
-                        (conservado, no sobrescrito).<br>
+                        (conservada, no sobrescrita).<br>
                         {% if alert.correccion_autor %}Por {{ alert.correccion_autor.username }}{% endif %}
                         {% if alert.correccion_fecha %} · {{ alert.correccion_fecha }}{% endif %}
                         {% if alert.correccion_motivo %}<br>Motivo: {{ alert.correccion_motivo }}{% endif %}
+                    </div>
+                    {% endif %}
+                    {% if alert.dataset_aprobado %}
+                    <div class="corr-note" style="border-top-color: rgba(20,160,80,0.3);">
+                        <b>🔒 Dataset aprobado:</b> la salida supervisada, el snapshot y la aprobación de este
+                        ejemplo son inmutables. No se admiten nuevas confirmaciones ni correcciones; cualquier
+                        exclusión posterior debe hacerse de forma explícita y auditada desde la ficha del candidato.
                     </div>
                     {% endif %}
                 </div>
@@ -899,6 +960,67 @@ function toggleReason(id) {
         btn.textContent       = 'ver más ↓';
     }
 }
+
+/* ── Menú compacto "Acciones ▾" (Sprint 3C/3D) ───────────────────────────
+   Se posiciona con `position: fixed` calculado desde el botón, así nunca
+   queda recortado por el `overflow-x:auto` del contenedor de la tabla. */
+var sentriaOpenActionsMenuId = null;
+
+function closeAllActionsMenus() {
+    document.querySelectorAll('.actions-menu.open').forEach(function (m) {
+        m.classList.remove('open');
+        m.style.top = ''; m.style.left = ''; m.style.minWidth = '';
+    });
+    document.querySelectorAll('.act-menu-btn').forEach(function (b) {
+        b.setAttribute('aria-expanded', 'false');
+    });
+    sentriaOpenActionsMenuId = null;
+}
+
+function toggleActionsMenu(evt, id) {
+    evt.stopPropagation();
+    var menu = document.getElementById('am-menu-' + id);
+    var btn = document.getElementById('am-btn-' + id);
+    var wasOpen = menu.classList.contains('open');
+    closeAllActionsMenus();
+    if (wasOpen) return;
+
+    menu.classList.add('open');
+    var rect = btn.getBoundingClientRect();
+    menu.style.minWidth = Math.max(rect.width, 190) + 'px';
+    var menuRect = menu.getBoundingClientRect();
+    var top = rect.bottom + 4;
+    var left = rect.left;
+    if (left + menuRect.width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - menuRect.width - 8);
+    if (top + menuRect.height > window.innerHeight - 8) top = Math.max(8, rect.top - menuRect.height - 4);
+    menu.style.top = top + 'px';
+    menu.style.left = left + 'px';
+
+    btn.setAttribute('aria-expanded', 'true');
+    sentriaOpenActionsMenuId = id;
+    var firstItem = menu.querySelector('.am-item');
+    if (firstItem) firstItem.focus();
+}
+
+document.addEventListener('click', function (e) {
+    if (sentriaOpenActionsMenuId !== null && !e.target.closest('.actions-dropdown')) {
+        closeAllActionsMenus();
+    }
+});
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && sentriaOpenActionsMenuId !== null) {
+        var id = sentriaOpenActionsMenuId;
+        closeAllActionsMenus();
+        var btn = document.getElementById('am-btn-' + id);
+        if (btn) btn.focus();
+    }
+});
+window.addEventListener('scroll', function () {
+    if (sentriaOpenActionsMenuId !== null) closeAllActionsMenus();
+}, true);
+window.addEventListener('resize', function () {
+    if (sentriaOpenActionsMenuId !== null) closeAllActionsMenus();
+});
 </script>
 </body>
 </html>

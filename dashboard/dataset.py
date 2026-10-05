@@ -215,10 +215,19 @@ def sincronizar_candidato(alerta):
     La sincronización NUNCA promueve un candidato: sólo un humano lo lleva a
     LISTO_PARA_REVISION / APROBADO / DEVUELTO (3B). Si aparece un problema de
     privacidad o de duplicado, el candidato vuelve a INCOMPLETO.
+
+    INMUTABILIDAD (3C/3D): un candidato APROBADO es intocable por esta función
+    — ni su salida, ni su diagnóstico, ni su estado cambian aquí jamás. La
+    única manera de moverlo es la exclusión explícita y auditada en
+    `revisar_candidato`.
     """
     rev = getattr(alerta, "revision_humana", None)
     if rev is None:
         return None
+
+    existente = getattr(alerta, "candidato_dataset", None)
+    if existente is not None and existente.estado == "APROBADO":
+        return existente
 
     cand, _creado = CandidatoDataset.objects.get_or_create(
         alerta=alerta, defaults={"ejemplo_id": ejemplo_id_para(alerta)},
@@ -394,6 +403,9 @@ def validar_para_revision(cand, salida):
     errores = []
     data = _contrato_dict(salida)
 
+    if not construir_entrada(a):
+        errores.append("la alerta no tiene contexto_ia_snapshot congelado")
+
     val = validar_salida_ia(data)
     if not val.ok:
         errores.extend(val.errores)
@@ -448,7 +460,12 @@ def guardar_borrador(cand, datos, autor, *, confirmado=False):
     contiene datos privados (antes de guardar). No cambia el estado (salvo salir
     de DEVUELTO/LISTO -> a efectos de re-revisión se conserva el estado humano).
     Devuelve (cand, errores).
+
+    PROTECCIÓN DE APROBADO (3C/3D): un candidato APROBADO es inmutable; esta
+    función se niega a tocar su salida.
     """
+    if cand.estado == "APROBADO":
+        return cand, ["este candidato ya está APROBADO: la salida supervisada es inmutable"]
     a = cand.alerta
     salida = _limpiar_salida_entrante(datos, a.verdad_terreno or (a.veredicto_ia))
     ok_priv, hallazgos, fugas = _privacidad_de_salida(a, salida)
@@ -467,7 +484,12 @@ def enviar_a_revision(cand, datos, autor, *, confirmado):
     """
     Guarda el borrador y, si pasa todas las validaciones, deja el candidato
     LISTO_PARA_REVISION con `completado_por = autor`. Devuelve (cand, errores).
+
+    PROTECCIÓN DE APROBADO (3C/3D): un candidato APROBADO es inmutable; esta
+    función se niega a reabrirlo.
     """
+    if cand.estado == "APROBADO":
+        return cand, ["este candidato ya está APROBADO: es inmutable y no vuelve a revisión"]
     a = cand.alerta
     salida = _limpiar_salida_entrante(datos, a.verdad_terreno or a.veredicto_ia)
     ok_priv, hallazgos, fugas = _privacidad_de_salida(a, salida)
@@ -495,10 +517,19 @@ def revisar_candidato(cand, *, decision, autor, observaciones=""):
     """
     Segunda revisión. Quien completó el borrador NO puede aprobar.
     `decision` ∈ {APROBADO, DEVUELTO, EXCLUIDO}. Append-only. Devuelve (cand, errores).
+
+    PROTECCIÓN DE APROBADO (3C/3D): un candidato ya APROBADO es inmutable;
+    la ÚNICA transición que admite desde ahí es una exclusión EXPLÍCITA y
+    auditada (con observaciones obligatorias). Nunca se puede re-aprobar ni
+    "devolver" uno ya aprobado — eso no tendría sentido y degradaría un
+    resultado que debe quedar congelado.
     """
     if decision not in dict(RevisionCandidato.DECISION_CHOICES):
         return cand, [f"decisión inválida: {decision!r}"]
-    if cand.estado not in ("LISTO_PARA_REVISION", "DEVUELTO"):
+    if cand.estado == "APROBADO":
+        if decision != "EXCLUIDO":
+            return cand, ["un candidato APROBADO es inmutable: sólo admite una exclusión explícita y auditada"]
+    elif cand.estado not in ("LISTO_PARA_REVISION", "DEVUELTO"):
         return cand, ["el candidato no está listo para una segunda revisión"]
     autor_pk = getattr(autor, "pk", None)
     if decision == "APROBADO" and cand.completado_por_id and autor_pk == cand.completado_por_id:

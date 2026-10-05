@@ -59,7 +59,7 @@
         <p class="sub">
             Se calcula <b>sólo</b> sobre alertas con <b>verdad de terreno humana</b> (revisión confirmada o corregida).
             Clase positiva = <span class="tag">REQUIERE_ATENCION</span>. No se usa el campo <code>estado</code> antiguo;
-            las alertas sin revisión humana no cuentan.
+            las alertas sin revisión de analista no cuentan.
         </p>
         <div class="kpis">
             <div class="kpi"><div class="n">{{ m.total_etiquetado }}</div><div class="l">Alertas etiquetadas</div></div>
@@ -69,7 +69,31 @@
             <div class="kpi"><div class="n">{{ n_completed }}</div><div class="l">Análisis COMPLETED</div></div>
         </div>
         {% if m.sin_veredicto_ia %}
-        <p class="note">{{ m.sin_veredicto_ia }} revisión(es) con verdad de terreno pero sin veredicto de IA COMPLETED: excluidas del cálculo.</p>
+        <p class="note">{{ m.sin_veredicto_ia }} revisión(es) con verdad de terreno pero sin clasificación de IA COMPLETED: excluidas del cálculo.</p>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Etiquetas por origen</h2>
+        <p class="sub">
+            Procedencia auditable de cada revisión. <b>No cambia la verdad de terreno ni los valores de la matriz</b> —
+            es sólo para saber qué tan representativa es la cifra de arriba.
+        </p>
+        <div class="kpis">
+            {% for f in origenes %}
+            <div class="kpi">
+                <div class="n">{{ f.n }}</div>
+                <div class="l">{{ f.etiqueta }}{% if not f.representativo %} ⚠{% endif %}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% if n_no_representativo %}
+        <div class="warn" style="margin-top:12px;">
+            ⚠ {{ n_no_representativo }} etiqueta(s) provienen de <b>pruebas controladas</b> (eventos de laboratorio
+            dirigidos, no un muestreo aleatorio de producción). Las pruebas controladas y las revisiones operativas
+            aisladas <b>no constituyen una muestra estadística representativa</b>. Las etiquetas de prueba controlada existentes
+            <b>no deben presentarse como rendimiento general del clasificador en producción.</b>
+        </div>
         {% endif %}
     </div>
 
