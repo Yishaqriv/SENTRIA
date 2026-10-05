@@ -3,18 +3,166 @@
 <head>
     <meta charset="UTF-8">
     <title>Crear usuario | SENTRIA</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            margin: 0;
+            padding: 0;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 0.05em;
+        }
+
+        .btn-back {
+            display: inline-block;
+            padding: 9px 18px;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 14px;
+            text-decoration: none;
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+        }
+
+        .btn-back:hover {
+            background: #334155;
+            color: white;
+        }
+
+        .content {
+            display: flex;
+            justify-content: center;
+            padding: 40px 20px;
+        }
+
+        .form-card {
+            background: #0b1324;
+            border: 1px solid #1e293b;
+            border-radius: 12px;
+            padding: 36px 40px;
+            width: 100%;
+            max-width: 480px;
+        }
+
+        .form-card h2 {
+            margin: 0 0 28px;
+            font-size: 20px;
+            color: #e2e8f0;
+        }
+
+        .form-group {
+            margin-bottom: 18px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            font-weight: bold;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 11px 14px;
+            background: #0f172a;
+            border: 1px solid #334155;
+            border-radius: 7px;
+            color: white;
+            font-size: 15px;
+            box-sizing: border-box;
+            transition: border-color 0.15s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #2563eb;
+        }
+
+        .form-group select option {
+            background: #0f172a;
+        }
+
+        .errorlist {
+            list-style: none;
+            padding: 0;
+            margin: 6px 0 0;
+        }
+
+        .errorlist li {
+            font-size: 13px;
+            color: #f87171;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 13px;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 7px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 8px;
+            transition: background 0.15s;
+        }
+
+        .btn-submit:hover {
+            background: #1d4ed8;
+        }
+    </style>
 </head>
 <body>
 
-<h1>Crear usuario</h1>
+<div class="header">
+    <h1>SENTRIA &mdash; Nuevo usuario</h1>
+    <a href="{% url 'lista_usuarios' %}" class="btn-back">← Volver</a>
+</div>
 
-<form method="POST">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Guardar</button>
-</form>
+<div class="content">
+    <div class="form-card">
+        <h2>Crear cuenta de usuario</h2>
 
-<a href="{% url 'lista_usuarios' %}">Volver</a>
+        <form method="POST">
+            {% csrf_token %}
+
+            {% for field in form %}
+            <div class="form-group">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% if field.errors %}
+                    <ul class="errorlist">
+                        {% for error in field.errors %}
+                            <li>{{ error }}</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
+
+            <button type="submit" class="btn-submit">Crear usuario</button>
+        </form>
+    </div>
+</div>
 
 </body>
 </html>

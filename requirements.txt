@@ -1,0 +1,22 @@
+# Django y API REST (dashboard/, usuarios/; JWT es scaffolding, ver CLAUDE.md)
+Django==6.0.4
+djangorestframework==3.17.1
+djangorestframework-simplejwt==5.5.1
+
+# Cliente MySQL (sentria_project/settings.py DATABASES)
+mysqlclient==2.2.8
+
+# Ingesta de alertas Wazuh + clasificación Gemini (sentria_backend.py)
+requests==2.32.5
+urllib3==2.6.3
+google-genai==2.21.0
+
+# Configuración vía variables de entorno (.env)
+python-dotenv==1.2.2
+
+# Servidor WSGI para producción/Docker
+gunicorn==26.0.0
+
+# Prototipo Flask legacy (sentria_web.py) — eliminar cuando se haga la limpieza
+# de código legado (ver roadmap en CLAUDE.md); no es parte de la app activa.
+Flask==3.1.3

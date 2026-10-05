@@ -6,4 +6,9 @@ db.sqlite3
 .vscode/
 .env
 *.log
-sentria_project/settings.py
+*.swp
+
+# sentria_project/settings.py ya no se ignora: la versión versionada lee
+# todos los secretos desde variables de entorno (ver .env.example) y no
+# contiene valores literales de respaldo. Los archivos de entorno reales
+# (.env) siguen ignorados arriba.

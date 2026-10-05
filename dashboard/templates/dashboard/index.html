@@ -1,136 +1,904 @@
+{% load roles %}
+{% load dashboard_extras %}
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="10">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>SENTRIA Dashboard</title>
     <style>
+        *, *::before, *::after { box-sizing: border-box; }
+
         body {
-            font-family: Arial, sans-serif;
-            background: #0f172a;
-            color: white;
-            margin: 0;
-            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #070d1a;
+            color: #d8e8f8;
+            margin: 0; padding: 0;
+            font-size: 15px;
         }
 
-        h1 {
-            text-align: center;
-            margin-top: 30px;
-            margin-bottom: 20px;
-            font-size: 48px;
+        /* ── Header ───────────────────────────────────────── */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 36px;
+            background: #0b1525;
+            border-bottom: 1px solid #1c2e48;
         }
+        .header-brand { display: flex; align-items: baseline; gap: 10px; }
+        .logo { font-size: 20px; font-weight: 700; color: #f0f6ff; letter-spacing: 0.08em; }
+        .tagline { font-size: 12px; color: #3d5878; letter-spacing: 0.04em; }
+        .header-right { display: flex; align-items: center; gap: 8px; }
 
-        .button-container {
-            text-align: center;
-            margin-bottom: 20px;
+        .user-chip {
+            font-size: 12px; color: #a0bcd8;
+            background: #111e35; border: 1px solid #1c2e48;
+            border-radius: 20px; padding: 5px 12px;
         }
-
-        .update-button {
-            display: inline-block;
-            padding: 12px 24px;
-            background: #1e293b;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            border: 1px solid #475569;
+        .btn {
+            display: inline-flex; align-items: center; gap: 5px;
+            padding: 7px 15px; border-radius: 7px; font-weight: 600;
+            font-size: 12px; text-decoration: none; cursor: pointer;
+            border: 1px solid transparent; transition: opacity .15s; white-space: nowrap;
         }
+        .btn:hover { opacity: .8; }
+        /* admin */
+        .btn-admin  { background: #12243e; color: #78aadc; border-color: #1e3d6a; }
+        /* usuarios */
+        .btn-users  { background: #1a2840; color: #90b8e0; border-color: #243856; }
+        /* salir */
+        .btn-red    { background: #2a0e0e; color: #f08888; border-color: #6b1a1a; }
+        .btn-blue   { background: #12306a; color: #90c8ff; border-color: #1e50a0; }
+        .btn-green  { background: #0a2a14; color: #50d890; border-color: #0e4828; }
+        .btn-slate  { background: #141e30; color: #90a8c8; border-color: #1e2f4a; }
 
-        .update-button:hover {
-            background: #334155;
+        /* ── Tarjetas liquid glass ─────────────────────────── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            padding: 18px 36px;
         }
-
-        table {
-            width: 90%;
-            margin: auto;
-            border-collapse: collapse;
-            background: #0b1324;
+        .stat-card {
+            background: linear-gradient(145deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.02) 100%);
+            border: 1px solid rgba(255,255,255,0.10);
+            border-radius: 14px;
+            padding: 18px 20px 16px;
+            position: relative;
+            overflow: hidden;
         }
-
-        th, td {
-            padding: 12px;
-            border: 1px solid #444;
-            text-align: center;
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 10%; right: 10%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.22), transparent);
         }
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 3px;
+            border-radius: 0 0 14px 14px;
+        }
+        .stat-total::after    { background: linear-gradient(90deg, #2a4a70, #4a6a90); }
+        .stat-critical::after { background: linear-gradient(90deg, #b02020, #e04040); }
+        .stat-high::after     { background: linear-gradient(90deg, #a05010, #e07020); }
+        .stat-medium::after   { background: linear-gradient(90deg, #806000, #c09000); }
+        .stat-low::after      { background: linear-gradient(90deg, #106030, #20a050); }
+        .stat-pending::after  { background: linear-gradient(90deg, #103880, #2060c0); }
+        .stat-atencion::after { background: linear-gradient(90deg, #a03020, #e05840); }
+        .stat-fp-ia::after    { background: linear-gradient(90deg, #607000, #98b820); }
+        .stat-fallido::after  { background: linear-gradient(90deg, #6a2a8a, #a050c0); }
 
+        .s-label {
+            font-size: 10px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.1em;
+            margin-bottom: 10px;
+        }
+        .stat-total    .s-label { color: #6080a0; }
+        .stat-critical .s-label { color: #c84040; }
+        .stat-high     .s-label { color: #c06820; }
+        .stat-medium   .s-label { color: #a08820; }
+        .stat-low      .s-label { color: #208848; }
+        .stat-pending  .s-label { color: #2870b8; }
+        .stat-atencion .s-label { color: #d05840; }
+        .stat-fp-ia    .s-label { color: #90a820; }
+        .stat-fallido  .s-label { color: #a870d0; }
+
+        .s-value {
+            font-size: 38px; font-weight: 700;
+            line-height: 1; letter-spacing: -0.02em;
+        }
+        .stat-total    .s-value { color: #e8f2ff; }
+        .stat-critical .s-value { color: #f07878; }
+        .stat-high     .s-value { color: #f09848; }
+        .stat-medium   .s-value { color: #d8b820; }
+        .stat-low      .s-value { color: #40d878; }
+        .stat-pending  .s-value { color: #58aaf0; }
+        .stat-atencion .s-value { color: #f08868; }
+        .stat-fp-ia    .s-value { color: #c8e058; }
+        .stat-fallido  .s-value { color: #cc90ee; }
+
+        /* ── Filtros ──────────────────────────────────────── */
+        .filters-panel {
+            display: flex; align-items: flex-end;
+            gap: 10px; flex-wrap: wrap;
+            padding: 14px 36px;
+            background: #0b1525;
+            border-top: 1px solid #1c2e48;
+            border-bottom: 1px solid #1c2e48;
+        }
+        .fg { display: flex; flex-direction: column; gap: 4px; }
+        .fg label {
+            font-size: 10px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.08em;
+            color: #4a6888;
+        }
+        .fg select, .fg input[type="text"] {
+            background: #081020;
+            border: 1px solid #1c2e48;
+            border-radius: 6px;
+            color: #c8daf0;
+            padding: 7px 11px;
+            font-size: 13px;
+            transition: border-color .15s;
+        }
+        .fg input[type="text"] { min-width: 200px; }
+        .fg input[type="text"]::placeholder { color: #3a5070; }
+        .fg select:focus, .fg input:focus { outline: none; border-color: #3a70d0; color: #e0eeff; }
+        .fg select option { background: #0b1525; }
+
+        /* ── Toolbar ──────────────────────────────────────── */
+        .toolbar {
+            display: flex; justify-content: space-between;
+            align-items: center; padding: 12px 36px;
+            flex-wrap: wrap; gap: 8px;
+        }
+        .toolbar-left { display: flex; gap: 8px; }
+        .results-count { font-size: 12px; color: #4a6080; }
+
+        /* ── Tabla con filas glass ────────────────────────── */
+        .table-wrap { padding: 0 36px 8px; overflow-x: auto; }
+        .table-wrap table { min-width: 900px; }
+
+        table { width: 100%; border-collapse: separate; border-spacing: 0 6px; font-size: 14px; }
+
+        thead tr { }
         th {
-            background: #1e293b;
+            padding: 8px 16px; text-align: left;
+            font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.06em;
+            color: #4a6888; white-space: nowrap;
+            background: transparent;
+            border-bottom: 1px solid #1c2e48;
         }
 
-        tr:nth-child(even) {
-            background: #111c33;
+        /* filas glass */
+        tbody tr td {
+            padding: 13px 16px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0.015) 100%);
+            border-top: 1px solid rgba(255,255,255,0.07);
+            border-bottom: 1px solid rgba(0,0,0,0.3);
+            vertical-align: middle;
+        }
+        tbody tr td:first-child {
+            border-left: 1px solid rgba(255,255,255,0.07);
+            border-radius: 10px 0 0 10px;
+        }
+        tbody tr td:last-child {
+            border-right: 1px solid rgba(255,255,255,0.07);
+            border-radius: 0 10px 10px 0;
+        }
+        tbody tr:hover td {
+            background: linear-gradient(135deg, rgba(255,255,255,0.07) 0%, rgba(255,255,255,0.03) 100%);
+            border-top-color: rgba(255,255,255,0.12);
         }
 
-        .empty-message {
-            text-align: center;
-            margin-top: 30px;
-            font-size: 18px;
-            color: #cbd5e1;
+        /* acento izquierdo por nivel de riesgo */
+        tbody tr.row-critical td:first-child { border-left: 3px solid #e04040; }
+        tbody tr.row-high     td:first-child { border-left: 3px solid #d07030; }
+        tbody tr.row-medium   td:first-child { border-left: 3px solid #c0a000; }
+        tbody tr.row-low      td:first-child { border-left: 3px solid #20a858; }
+        tbody tr.row-default  td:first-child { border-left: 3px solid #2a4060; }
+
+        /* textos de celda */
+        .td-id    { font-size: 11px; color: #2a4060; font-variant-numeric: tabular-nums; width: 40px; }
+        .td-desc  { max-width: 210px; color: #e8f2ff; line-height: 1.5; font-weight: 700; }
+        .td-date  { font-size: 12px; color: #7898b8; white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+        /* Riesgo pills */
+        .risk-pill {
+            display: inline-block; padding: 4px 11px;
+            border-radius: 6px; font-size: 12px;
+            font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
         }
+        .rp-critical { background: rgba(224,64,64,0.15);  color: #f07878; border: 1px solid rgba(224,64,64,0.35); }
+        .rp-high     { background: rgba(208,112,48,0.15); color: #f09848; border: 1px solid rgba(208,112,48,0.35); }
+        .rp-medium   { background: rgba(192,160,0,0.15);  color: #d8b820; border: 1px solid rgba(192,160,0,0.35); }
+        .rp-low      { background: rgba(32,168,88,0.15);  color: #40d878; border: 1px solid rgba(32,168,88,0.35); }
+        .rp-default  { background: rgba(42,64,96,0.4);    color: #7898b8; border: 1px solid rgba(42,64,96,0.6); }
+
+        /* Severidad */
+        .sev-dot { display:inline-flex; align-items:center; gap:5px; font-size:13px; font-weight:600; }
+        .sev-dot::before { content:''; display:inline-block; width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+        .sev-alta  { color: #e87878; } .sev-alta::before  { background: #e87878; box-shadow: 0 0 5px #e04040; }
+        .sev-media { color: #d89040; } .sev-media::before { background: #d89040; box-shadow: 0 0 5px #c07020; }
+        .sev-baja  { color: #40c870; } .sev-baja::before  { background: #40c870; box-shadow: 0 0 5px #20a050; }
+        .sev-nd    { color: #2a4060; } .sev-nd::before    { background: #2a4060; }
+
+        /* Estado */
+        .estado-pill {
+            display:inline-block; padding:4px 11px;
+            border-radius:6px; font-size:12px; font-weight:600;
+        }
+        .ep-pendiente { background: rgba(40,100,200,0.15); color: #70b0f0; border: 1px solid rgba(40,100,200,0.35); }
+        .ep-revisada  { background: rgba(20,160,80,0.15);  color: #40d878; border: 1px solid rgba(20,160,80,0.35); }
+        .ep-falso     { background: rgba(180,148,0,0.15);  color: #d0aa20; border: 1px solid rgba(180,148,0,0.35); }
+
+        /* Acciones */
+        .act-btn {
+            display:inline-block; padding:4px 10px; font-size:11px; font-weight:600;
+            border-radius:5px; text-decoration:none; margin:1px;
+            border:1px solid transparent; white-space:nowrap; transition:opacity .15s; font-size:12px;
+        }
+        .act-btn:hover { opacity: .75; }
+        .act-btn { cursor: pointer; }
+        .ab-detalle  { background: rgba(120,140,168,0.12); color: #9ab8d8; border-color: rgba(120,140,168,0.32); }
+        .ab-corregir { background: rgba(40,100,200,0.12); color: #70b0f0; border-color: rgba(40,100,200,0.35); }
+        .ab-reintentar { background: rgba(160,80,192,0.14); color: #cc90ee; border-color: rgba(160,80,192,0.4); }
+        .evi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 4px 14px; margin-top:6px; }
+        .evi-grid span { font-size: 12.5px; color: #b8d0ea; }
+        .evi-grid b { color: #8fb0d8; }
+
+        /* Expandible */
+        .reason-cell { max-width: 280px; }
+        .reason-preview { color: #b8d0ea; line-height: 1.6; font-size: 13px; }
+        .reason-full    { color: #b8d0ea; line-height: 1.6; font-size: 13px; margin-top: 6px; padding-top: 6px; border-top: 1px solid #1c2e48; }
+        .expand-btn {
+            background: none; border: none; cursor: pointer;
+            color: #3a78d0; font-size: 11px; padding: 3px 0;
+            font-weight: 600; display: block; margin-top: 2px;
+        }
+        .expand-btn:hover { color: #70b0ff; }
+
+        /* ── Paginación ───────────────────────────────────── */
+        .pagination {
+            display: flex; justify-content: center; align-items: center;
+            gap: 4px; padding: 22px 36px; flex-wrap: wrap;
+        }
+        .pg {
+            display:inline-block; padding:6px 12px; border-radius:6px;
+            font-size:12px; font-weight:600; text-decoration:none;
+            background: rgba(255,255,255,0.04); color: #4a6888;
+            border: 1px solid rgba(255,255,255,0.08); transition: all .15s;
+        }
+        .pg:hover { background: rgba(255,255,255,0.08); color: #a0c0e0; }
+        .pg.active { background: #12306a; color: #90c8ff; border-color: #1e50a0; }
+        .pg.disabled { color: #1c2e48; cursor:default; pointer-events:none; }
+        .pg-info { font-size:11px; color: #2a4060; padding:0 10px; }
+
+        /* Empty */
+        .empty-state { text-align:center; padding:70px 20px; }
+        .empty-state .e-icon { font-size:38px; margin-bottom:14px; }
+        .empty-state p { font-size:14px; color: #3a5878; }
+
+        /* ── Veredicto IA ─────────────────────────────────── */
+        .verdict-pill {
+            display: inline-block; padding: 4px 11px;
+            border-radius: 6px; font-size: 12px; font-weight: 700;
+            letter-spacing: 0.03em; white-space: nowrap;
+        }
+        .vp-atencion { background: rgba(224,88,64,0.16);  color: #f0906c; border: 1px solid rgba(224,88,64,0.38); }
+        .vp-falso    { background: rgba(152,184,32,0.14); color: #c0dd58; border: 1px solid rgba(152,184,32,0.34); }
+        .vp-pendiente{ background: rgba(40,100,200,0.15); color: #70b0f0; border: 1px solid rgba(40,100,200,0.35); }
+        .vp-fallido  { background: rgba(160,80,192,0.16); color: #cc90ee; border: 1px solid rgba(160,80,192,0.4); }
+        .vp-corr     { background: rgba(255,255,255,0.06); color: #a0bcd8; border: 1px dashed rgba(255,255,255,0.22); }
+        .vp-orig     { font-size: 11px; color: #5878a0; text-decoration: line-through; margin-left: 4px; }
+        .vp-legado   { background: rgba(90,105,130,0.14); color: #93a6c4; border: 1px dashed rgba(140,160,190,0.4); }
+        .legacy-tag  { font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+                       color: #7d90b0; border: 1px dashed rgba(140,160,190,0.4); border-radius: 4px; padding: 1px 5px; margin-left: 4px; }
+        .legacy-note { color: #93a6c4; border-left: 3px solid rgba(140,160,190,0.4); padding-left: 10px; }
+
+        tbody tr.row-fallido td:first-child { border-left: 3px solid #a050c0; }
+
+        /* Fila de detalle expandible */
+        .detail-row td {
+            background: rgba(255,255,255,0.02) !important;
+            border-radius: 0 0 10px 10px !important;
+            padding: 0 16px 14px !important;
+        }
+        .detail-box {
+            display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px 24px;
+            padding: 14px 16px; border-radius: 10px;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            font-size: 13px; color: #c8daf0; line-height: 1.55;
+        }
+        .detail-box h4 {
+            margin: 0 0 6px; font-size: 10px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.09em; color: #4a6888;
+        }
+        .detail-box .full { grid-column: 1 / -1; }
+        .cvss-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap: 4px 14px; }
+        .cvss-grid span b { color: #9ab6d6; font-weight: 600; }
+        .cvss-nd { color: #5878a0; }
+        .miss-list { margin: 0; padding-left: 18px; }
+        .miss-list li { margin: 2px 0; }
+        .prov-tag {
+            display: inline-block; font-size: 11px; color: #7898b8;
+            background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 5px; padding: 2px 8px;
+        }
+        .fail-note { color: #cc90ee; }
+        .corr-note {
+            grid-column: 1 / -1; margin-top: 4px; padding-top: 10px;
+            border-top: 1px solid rgba(255,255,255,0.08); color: #b8d0ea;
+        }
+        .corr-note b { color: #e8f2ff; }
+
+        .detail-toggle {
+            background: none; border: none; cursor: pointer;
+            color: #3a78d0; font-size: 11px; font-weight: 600; padding: 2px 0;
+        }
+        .detail-toggle:hover { color: #70b0ff; }
+
+        .vp-omitido { background: rgba(120,140,168,0.14); color: #9ab0c8; border: 1px solid rgba(120,140,168,0.3); }
+        tbody tr.row-omitido td:first-child { border-left: 3px solid #5a7088; }
+        .vp-efec { font-size: 11px; color: #90b8e0; margin-left: 4px; }
+
+        /* Activo lógico */
+        .asset-tag {
+            display: inline-flex; flex-direction: column; gap: 1px;
+            font-size: 11px; line-height: 1.35;
+        }
+        .asset-tag .a-id { color: #a0c0e0; font-weight: 700; }
+        .asset-tag .a-meta { color: #5878a0; }
+        .asset-none { color: #3a5878; font-size: 11px; }
+
+        /* ── Navegación de colas ──────────────────────────── */
+        .cola-nav {
+            display: flex; gap: 6px; flex-wrap: wrap;
+            padding: 14px 36px 0;
+        }
+        .cola-tab {
+            display: inline-flex; align-items: center; gap: 7px;
+            padding: 8px 15px; border-radius: 8px 8px 0 0;
+            font-size: 13px; font-weight: 600; text-decoration: none;
+            color: #6a8ab0; background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.07); border-bottom: none;
+        }
+        .cola-tab:hover { color: #a0c0e0; }
+        .cola-tab.active { color: #e8f2ff; background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.15); }
+        .cola-tab .badge {
+            font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 10px;
+            background: rgba(255,255,255,0.08); color: #a0bcd8;
+        }
+        .cola-head { padding: 10px 36px 0; }
+        .cola-head h1 { margin: 0; font-size: 20px; font-weight: 700; color: #f0f6ff; }
+        .cola-head p  { margin: 4px 0 0; font-size: 12px; color: #4a6888; }
+
+        /* Mensajes flash */
+        .flash-messages { padding: 14px 36px 0; display: flex; flex-direction: column; gap: 8px; }
+        .flash { padding: 10px 16px; border-radius: 8px; font-size: 13px; border: 1px solid transparent; backdrop-filter: blur(6px); }
+        .flash-success { background: rgba(10,42,20,0.6); color: #a8f0c8; border-color: #0e4828; }
+        .flash-info    { background: rgba(18,36,62,0.6); color: #b8d0ea; border-color: #1e3d6a; }
+        .flash-error   { background: rgba(42,14,14,0.6); color: #f0b8b8; border-color: #6b1a1a; }
     </style>
 </head>
 <body>
 
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; padding:0 40px;">
+<!-- Header -->
+<div class="header">
+    <div class="header-brand">
+        <span class="logo">SENTRIA</span>
+        <span class="tagline">AI Alert Security Classification</span>
+    </div>
+    <div class="header-right">
+        <span class="user-chip">{{ request.user.username }}</span>
 
-    <h1>AI Alert Security Classification</h1>
+        <a href="{% url 'mantenimiento_lista' %}" class="btn btn-admin">🔧 Ventanas de mantenimiento</a>
 
-    <div>
-        <span style="margin-right:15px;">
-            👤 {{ request.user.username }}
-        </span>
+        {% if request.user|tiene_rol:"ADMIN,ANALISTA" %}
+        <a href="{% url 'bandeja_dataset' %}" class="btn btn-admin">🗂 Dataset</a>
+        <a href="{% url 'metricas' %}" class="btn btn-admin">📊 Métricas</a>
+        {% endif %}
+
+        {% if request.user|tiene_rol:"ADMIN" %}
+        <a href="{% url 'lista_usuarios' %}" class="btn btn-users">⚙ Usuarios</a>
+        {% endif %}
 
         <form method="POST" action="{% url 'logout' %}" style="display:inline;">
-    {% csrf_token %}
-    <button type="submit"
-        style="
-        padding:8px 12px;
-        background:#dc2626;
-        color:white;
-        border:none;
-        border-radius:6px;
-        font-weight:bold;
-        cursor:pointer;
-        ">
-        Cerrar sesión
-    </button>
-</form>
+            {% csrf_token %}
+            <button type="submit" class="btn btn-red">Salir</button>
+        </form>
     </div>
-
 </div>
 
-    <div class="button-container">
-        <a href="/update_alerts" class="update-button">Actualizar alertas</a>
-    </div>
+{% if messages %}
+<div class="flash-messages">
+    {% for message in messages %}
+    <div class="flash flash-{{ message.tags }}">{{ message }}</div>
+    {% endfor %}
+</div>
+{% endif %}
 
-    <table>
+<!-- Navegación de colas -->
+<div class="cola-nav">
+    <a href="{% url 'cola_atencion' %}" class="cola-tab {% if cola_activa == 'atencion' %}active{% endif %}">
+        Requiere atención <span class="badge">{{ n_efectivo_atencion }}</span></a>
+    <a href="{% url 'cola_falsos_positivos' %}" class="cola-tab {% if cola_activa == 'fp' %}active{% endif %}">
+        Falsos positivos <span class="badge">{{ n_efectivo_falso_positivo }}</span></a>
+    <a href="{% url 'cola_pendientes' %}" class="cola-tab {% if cola_activa == 'pendientes' %}active{% endif %}">
+        Pendientes / omitidos / fallos <span class="badge">{{ n_pendientes_analisis|add:n_omitidas|add:n_fallidas }}</span></a>
+    <a href="{% url 'index' %}" class="cola-tab {% if cola_activa == 'historial' %}active{% endif %}">
+        Historial completo <span class="badge">{{ total }}</span></a>
+</div>
+<div class="cola-head">
+    <h1>{{ cola_titulo }}</h1>
+    <p>{{ cola_subtitulo }}</p>
+</div>
+
+<!-- Tarjetas -->
+<div class="stats-row">
+    <div class="stat-card stat-total">
+        <div class="s-label">Total</div>
+        <div class="s-value">{{ total }}</div>
+    </div>
+    <div class="stat-card stat-atencion">
+        <div class="s-label">Atención · IA / efectivo</div>
+        <div class="s-value">{{ n_ia_atencion }}<span style="font-size:18px; color:#7898b8;"> / {{ n_efectivo_atencion }}</span></div>
+    </div>
+    <div class="stat-card stat-fp-ia">
+        <div class="s-label">Falso pos. · IA / efectivo</div>
+        <div class="s-value">{{ n_ia_falso_positivo }}<span style="font-size:18px; color:#7898b8;"> / {{ n_efectivo_falso_positivo }}</span></div>
+    </div>
+    <div class="stat-card stat-fallido">
+        <div class="s-label">Fallo de análisis</div>
+        <div class="s-value">{{ n_fallidas }}</div>
+    </div>
+    <div class="stat-card stat-pending">
+        <div class="s-label">Omitidas por política</div>
+        <div class="s-value">{{ n_omitidas }}</div>
+    </div>
+    <div class="stat-card stat-critical">
+        <div class="s-label">Critical</div>
+        <div class="s-value">{{ n_critical }}</div>
+    </div>
+    <div class="stat-card stat-high">
+        <div class="s-label">High</div>
+        <div class="s-value">{{ n_high }}</div>
+    </div>
+    <div class="stat-card stat-medium">
+        <div class="s-label">Medium</div>
+        <div class="s-value">{{ n_medium }}</div>
+    </div>
+    <div class="stat-card stat-low">
+        <div class="s-label">Low</div>
+        <div class="s-value">{{ n_low }}</div>
+    </div>
+</div>
+<p style="padding: 4px 36px 0; margin: 0; font-size: 11px; color: #3a5878;">
+    Contadores <b>IA</b> = veredicto original del modelo. Contadores <b>efectivo</b> = con la corrección humana aplicada.
+</p>
+
+<!-- Filtros (se mantienen en la cola actual) -->
+<form method="GET" action="">
+<div class="filters-panel">
+    <div class="fg">
+        <label>Buscar</label>
+        <input type="text" name="q" value="{{ filtro_q }}" placeholder="descripción de la alerta...">
+    </div>
+    <div class="fg">
+        <label>Riesgo IA</label>
+        <select name="riesgo">
+            <option value="">Todos los niveles</option>
+            <option value="CRITICAL" {% if filtro_riesgo == 'CRITICAL' %}selected{% endif %}>Critical</option>
+            <option value="HIGH"     {% if filtro_riesgo == 'HIGH'     %}selected{% endif %}>High</option>
+            <option value="MEDIUM"   {% if filtro_riesgo == 'MEDIUM'   %}selected{% endif %}>Medium</option>
+            <option value="LOW"      {% if filtro_riesgo == 'LOW'      %}selected{% endif %}>Low</option>
+        </select>
+    </div>
+    <div class="fg">
+        <label>Veredicto IA</label>
+        <select name="veredicto">
+            <option value="">Todos</option>
+            <option value="REQUIERE_ATENCION" {% if filtro_veredicto == 'REQUIERE_ATENCION' %}selected{% endif %}>Requiere atención</option>
+            <option value="FALSO_POSITIVO"    {% if filtro_veredicto == 'FALSO_POSITIVO'    %}selected{% endif %}>Falso positivo</option>
+        </select>
+    </div>
+    <div class="fg">
+        <label>Análisis</label>
+        <select name="analisis">
+            <option value="">Todos</option>
+            <option value="COMPLETED"        {% if filtro_analisis == 'COMPLETED'        %}selected{% endif %}>Completado</option>
+            <option value="PENDING"          {% if filtro_analisis == 'PENDING'          %}selected{% endif %}>Pendiente</option>
+            <option value="OMITIDO_POLITICA" {% if filtro_analisis == 'OMITIDO_POLITICA' %}selected{% endif %}>Omitido por política</option>
+            <option value="ANALISIS_FALLIDO" {% if filtro_analisis == 'ANALISIS_FALLIDO' %}selected{% endif %}>Fallo de análisis</option>
+        </select>
+    </div>
+    <div class="fg">
+        <label>Motivo omisión</label>
+        <select name="motivo">
+            <option value="">Todos</option>
+            <option value="SIN_CONTEXTO_ACTIVO" {% if filtro_motivo == 'SIN_CONTEXTO_ACTIVO' %}selected{% endif %}>Sin contexto de activo</option>
+            <option value="NIVEL_NO_ELEGIBLE"   {% if filtro_motivo == 'NIVEL_NO_ELEGIBLE'   %}selected{% endif %}>Nivel no elegible</option>
+            <option value="RUIDO_OPERATIVO"     {% if filtro_motivo == 'RUIDO_OPERATIVO'     %}selected{% endif %}>Ruido operativo</option>
+            <option value="REGLA_EXCLUIDA"      {% if filtro_motivo == 'REGLA_EXCLUIDA'      %}selected{% endif %}>Regla excluida</option>
+        </select>
+    </div>
+    <div class="fg">
+        <label>Estado triage</label>
+        <select name="estado">
+            <option value="">Todos</option>
+            <option value="Pendiente"      {% if filtro_estado == 'Pendiente'      %}selected{% endif %}>Pendiente</option>
+            <option value="Revisada"       {% if filtro_estado == 'Revisada'       %}selected{% endif %}>Revisada</option>
+            <option value="Falso positivo" {% if filtro_estado == 'Falso positivo' %}selected{% endif %}>Falso positivo</option>
+        </select>
+    </div>
+    <div class="fg">
+        <label>Ordenar por</label>
+        <select name="orden">
+            <option value="-timestamp" {% if filtro_orden == '-timestamp' %}selected{% endif %}>Fecha ↓</option>
+            <option value="timestamp"  {% if filtro_orden == 'timestamp'  %}selected{% endif %}>Fecha ↑</option>
+            <option value="-severidad" {% if filtro_orden == '-severidad' %}selected{% endif %}>Severidad ↓</option>
+            <option value="severidad"  {% if filtro_orden == 'severidad'  %}selected{% endif %}>Severidad ↑</option>
+            <option value="-riesgo_ia" {% if filtro_orden == '-riesgo_ia' %}selected{% endif %}>Riesgo ↓</option>
+            <option value="riesgo_ia"  {% if filtro_orden == 'riesgo_ia'  %}selected{% endif %}>Riesgo ↑</option>
+            <option value="estado"     {% if filtro_orden == 'estado'     %}selected{% endif %}>Estado</option>
+        </select>
+    </div>
+    <button type="submit" class="btn btn-blue" style="padding:8px 18px; font-size:13px;">Filtrar</button>
+    <a href="?" class="btn" style="padding:8px 14px; font-size:13px; background:transparent; color:#3a5878; border-color:#1c2e48;">✕</a>
+</div>
+</form>
+
+<!-- Toolbar -->
+<div class="toolbar">
+    <div class="toolbar-left">
+        {% if request.user|tiene_rol:"ADMIN,ANALISTA" %}
+        <a href="{% url 'update_alerts' %}" class="btn btn-slate" style="font-size:13px; padding:8px 16px;">↻ Actualizar</a>
+        <a href="{% url 'exportar_csv' %}{% if query_string %}?{{ query_string }}{% endif %}" class="btn btn-green" style="font-size:13px; padding:8px 16px;">⬇ Exportar CSV</a>
+        {% endif %}
+        {% if request.user|tiene_rol:"ADMIN" %}
+        <a href="{% url 'reclasificar_pendientes' %}" class="btn btn-admin" style="font-size:13px; padding:8px 16px;" onclick="return confirm('¿Re-analizar las alertas con fallo de análisis (y las legacy pendientes)? Puede tardar según la cantidad y la pausa entre llamadas.');">⟳ Reclasificar fallidas</a>
+        {% endif %}
+    </div>
+    <span class="results-count">
+        {{ page_obj.paginator.count }} resultado{{ page_obj.paginator.count|pluralize:"s" }}
+        &nbsp;·&nbsp; p. {{ page_obj.number }} / {{ page_obj.paginator.num_pages }}
+        &nbsp;·&nbsp; proveedor IA: <span class="prov-tag">{{ proveedor_activo }}</span>
+    </span>
+</div>
+
+<!-- Tabla -->
+<div class="table-wrap">
+<table>
+    <thead>
         <tr>
+            <th style="width:40px;">#</th>
             <th>Descripción</th>
-            <th>Severidad</th>
-            <th>Fuente</th>
+            <th>Activo</th>
+            <th>Sev.</th>
             <th>Fecha</th>
+            <th>Veredicto IA</th>
             <th>Riesgo IA</th>
             <th>Explicación IA</th>
+            <th>Revisión humana</th>
+            <th>Acciones</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for alert in page_obj %}
+        {% with r=alert.riesgo_ia|lower %}
+        <tr class="row-{% if alert.analisis_fallido %}fallido{% elif alert.omitido_por_politica %}omitido{% elif r == 'critical' %}critical{% elif r == 'high' %}high{% elif r == 'medium' %}medium{% elif r == 'low' %}low{% else %}default{% endif %}">
+
+            <td class="td-id">{{ alert.id }}</td>
+
+            <td class="td-desc">{{ alert.descripcion }}</td>
+
+            <td>
+                {% if alert.activo_logico %}
+                <span class="asset-tag">
+                    <span class="a-id">{{ alert.activo_logico.identificador }}</span>
+                    <span class="a-meta">{{ alert.activo_logico.get_tipo_activo_display }} · {{ alert.activo_logico.get_criticidad_display }} · {{ alert.activo_logico.get_os_family_display }}</span>
+                </span>
+                {% else %}
+                <span class="asset-none">sin activo</span>
+                {% endif %}
+            </td>
+
+            <td>
+                {% if alert.severidad %}
+                    {% if alert.severidad >= 12 %}
+                        <span class="sev-dot sev-alta">{{ alert.severidad }}</span>
+                    {% elif alert.severidad >= 7 %}
+                        <span class="sev-dot sev-media">{{ alert.severidad }}</span>
+                    {% else %}
+                        <span class="sev-dot sev-baja">{{ alert.severidad }}</span>
+                    {% endif %}
+                {% else %}
+                    <span class="sev-dot sev-nd">—</span>
+                {% endif %}
+            </td>
+
+            <td class="td-date">{{ alert.timestamp|default:alert.creado_en }}</td>
+
+            <td>
+                {% if alert.analisis_legado %}
+                    <span class="verdict-pill vp-legado" title="Alerta anterior al contrato de IA. No es un resultado del contrato nuevo.">Análisis legado</span>
+                {% elif alert.analisis_fallido %}
+                    <span class="verdict-pill vp-fallido">⚠ Fallo de análisis</span>
+                {% elif alert.omitido_por_politica %}
+                    <span class="verdict-pill vp-omitido">Omitido: {{ alert.get_motivo_omision_display|default:"política" }}</span>
+                {% elif alert.veredicto_efectivo == 'REQUIERE_ATENCION' %}
+                    <span class="verdict-pill vp-atencion">Requiere atención</span>
+                    {% if alert.tiene_correccion_humana %}<span class="vp-orig">{{ alert.veredicto_ia|default:"—" }}</span>{% endif %}
+                {% elif alert.veredicto_efectivo == 'FALSO_POSITIVO' %}
+                    <span class="verdict-pill vp-falso">Falso positivo</span>
+                    {% if alert.tiene_correccion_humana %}<span class="vp-orig">{{ alert.veredicto_ia|default:"—" }}</span>{% endif %}
+                {% else %}
+                    <span class="verdict-pill vp-pendiente">Pendiente de análisis</span>
+                {% endif %}
+                {% if alert.tiene_correccion_humana %}<span class="verdict-pill vp-corr">✎ corregido</span>{% endif %}
+                <button type="button" class="detail-toggle" onclick="toggleDetail({{ alert.id }})" id="dt-btn-{{ alert.id }}">detalle ↓</button>
+            </td>
+
+            <td>
+                {% if alert.analisis_legado %}
+                    <span class="risk-pill rp-default">{{ alert.riesgo_ia|default:"—" }}</span>
+                    {% if alert.riesgo_ia %}<span class="legacy-tag">legado</span>{% endif %}
+                {% elif r == 'critical' %}     <span class="risk-pill rp-critical">Critical</span>
+                {% elif r == 'high' %}         <span class="risk-pill rp-high">High</span>
+                {% elif r == 'medium' %}       <span class="risk-pill rp-medium">Medium</span>
+                {% elif r == 'low' %}          <span class="risk-pill rp-low">Low</span>
+                {% else %}                     <span class="risk-pill rp-default">{{ alert.riesgo_ia|default:"—" }}</span>
+                {% endif %}
+            </td>
+
+            <td class="reason-cell">
+                {% if alert.analisis_legado and alert.explicacion_ia %}
+                    <span class="legacy-tag">legado</span>
+                {% endif %}
+                {% if alert.explicacion_ia %}
+                    {% if alert.explicacion_ia|length > 120 %}
+                        <span class="reason-preview" id="preview-{{ alert.id }}">{{ alert.explicacion_ia|slice:":120" }}&hellip;</span>
+                        <div class="reason-full" id="full-{{ alert.id }}" style="display:none;">{{ alert.explicacion_ia }}</div>
+                        <button class="expand-btn" id="btn-{{ alert.id }}" onclick="toggleReason({{ alert.id }})">ver más ↓</button>
+                    {% else %}
+                        <span class="reason-preview">{{ alert.explicacion_ia }}</span>
+                    {% endif %}
+                {% else %}
+                    <span style="color:#1c2e48;">—</span>
+                {% endif %}
+            </td>
+
+            <td>
+                {% if alert.analisis_legado %}
+                    <span class="estado-pill" style="opacity:.5;">—</span>
+                {% elif alert.estado_revision == 'CONFIRMADA' %}
+                    <span class="estado-pill ep-revisada">Confirmada: {{ alert.veredicto_ia }}</span>
+                {% elif alert.estado_revision == 'CORREGIDA' %}
+                    <span class="estado-pill ep-revisada">Corregida: {{ alert.get_correccion_veredicto_display }}</span>
+                    <span class="vp-orig">IA: {{ alert.veredicto_ia|default:"—" }}</span>
+                {% elif alert.estado_revision == 'EXCLUIDA' %}
+                    <span class="estado-pill ep-pendiente">Excluida del dataset</span>
+                {% elif alert.analisis_completado %}
+                    <span class="estado-pill ep-pendiente">Sin revisar</span>
+                {% else %}
+                    <span class="estado-pill" style="opacity:.5;">—</span>
+                {% endif %}
+            </td>
+
+            <td style="white-space:nowrap;">
+                <button type="button" class="act-btn ab-detalle" onclick="toggleDetail({{ alert.id }})">Ver detalle</button>
+                {% if alert.analisis_completado and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+                    <a href="{% url 'revisar_alerta' alert.id %}?accion=confirmar" class="act-btn ab-corregir">Confirmar veredicto IA</a>
+                    <a href="{% url 'corregir_veredicto' alert.id %}" class="act-btn ab-corregir">Corregir veredicto IA</a>
+                    <a href="{% url 'revisar_alerta' alert.id %}?accion=excluir" class="act-btn ab-reintentar">Excluir del dataset</a>
+                {% endif %}
+                {% if alert.analisis_fallido and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+                    <a href="{% url 'reintentar_analisis' alert.id %}" class="act-btn ab-reintentar">Reintentar análisis</a>
+                {% endif %}
+            </td>
         </tr>
 
-        {% for alert in alerts %}
+        <tr class="detail-row" id="dt-{{ alert.id }}" style="display:none;">
+            <td colspan="10">
+                <div class="detail-box">
+                    {% if alert.activo_logico %}
+                    <div class="full">
+                        <h4>Activo lógico (contexto experimental, no identificable)</h4>
+                        {{ alert.activo_logico.identificador }} · {{ alert.activo_logico.nombre_visible }} ·
+                        {{ alert.activo_logico.get_tipo_activo_display }} ·
+                        criticidad {{ alert.activo_logico.get_criticidad_display }} ·
+                        {{ alert.activo_logico.get_os_family_display }} / {{ alert.activo_logico.get_os_role_display }} ·
+                        horario {{ alert.activo_logico.hora_inicio_operacion|time:"H:i" }}–{{ alert.activo_logico.hora_fin_operacion|time:"H:i" }} ({{ alert.activo_logico.zona_horaria }})
+                    </div>
+                    {% endif %}
+
+                    {% with snap=alert.contexto_ia_snapshot %}
+                    {% if snap.evidencia_tecnica %}
+                    {% with ev=snap.evidencia_tecnica %}
+                    <div class="full">
+                        <h4>Evidencia técnica utilizada (categórica y anonimizada)</h4>
+                        <div class="evi-grid">
+                            <span><b>Evento FIM:</b> {{ ev.fim_event_type }}</span>
+                            <span><b>Categoría de ruta:</b> {{ ev.path_category }}</span>
+                            <span><b>Extensión/tipo:</b> {{ ev.file_extension }}</span>
+                            <span><b>Hash disponible:</b> {{ ev.hash_present|yesno:"sí,no" }}</span>
+                            <span><b>Tamaño:</b> {{ ev.size_info }}</span>
+                            <span><b>Usuario (rol):</b> {{ ev.user_role_category }}</span>
+                            <span><b>Proceso:</b> {{ ev.process_category }}</span>
+                            <span><b>Eventos correlacionados:</b> {{ ev.correlated_events }}</span>
+                            <span><b>Telemetría:</b> {{ ev.telemetry_source }}</span>
+                            <span><b>Ventana operativa:</b> {{ snap.operational_window }}</span>
+                        </div>
+                    </div>
+                    {% endwith %}
+                    {% endif %}
+                    {% if alert.analisis_completado %}
+                    <div class="full">
+                        <h4>Contexto de mantenimiento</h4>
+                        <b>{{ snap.maintenance_window|mant_es }}</b>{% if snap.maintenance_category and snap.maintenance_category != 'no_aplica' %} · categoría: {{ snap.maintenance_category }}{% endif %}
+                        <div class="nota" style="font-size:11px; color:#5a789a; margin-top:4px;">
+                            Estar dentro de una ventana autorizada no convierte la alerta en falso positivo: la IA pondera la evidencia técnica.
+                        </div>
+                    </div>
+                    {% endif %}
+                    {% endwith %}
+
+                    {% if alert.analisis_legado %}
+                    <div class="full legacy-note">
+                        <h4>Análisis legado</h4>
+                        Alerta <b>anterior al contrato de IA</b> (Sprint 2A+). El riesgo y la explicación que se
+                        muestran vienen del flujo antiguo de Gemini y <b>no</b> siguen el contrato nuevo
+                        (CVSS v3, veredicto binario FALSO_POSITIVO/REQUIERE_ATENCION, evidencia faltante).
+                        No se han reinterpretado ni modificado. Cuando esta alerta se re-ingiere o se
+                        reclasifica, pasa al contrato nuevo.<br>
+                        <b>Triage histórico:</b> {{ alert.estado }}
+                    </div>
+                    {% elif alert.omitido_por_politica %}
+                    <div class="full">
+                        <h4>Omitida por política</h4>
+                        No se envió al modelo de IA. Motivo: <b>{{ alert.get_motivo_omision_display }}</b>.
+                        Sigue visible y puede revisarse manualmente. No es un fallo de análisis y no tiene veredicto.
+                    </div>
+                    {% elif alert.analisis_fallido %}
+                    <div class="full fail-note">
+                        <h4>Análisis fallido</h4>
+                        Este análisis no pudo completarse. La alerta permanece visible y pendiente de reintento; no se ha asignado ningún veredicto.
+                        {% if alert.explicacion_ia %}<br>Motivo: {{ alert.explicacion_ia }}{% endif %}
+                    </div>
+                    {% else %}
+                    <div>
+                        <h4>Resumen CVSS (contrato v3, en español)</h4>
+                        {% if alert.factores_cvss %}
+                        <div class="cvss-grid">
+                            {% for k, v in alert.factores_cvss.items %}
+                            <span><b>{{ k|cvss_es }}:</b> <span class="{% if v == 'no_determinado' %}cvss-nd{% endif %}">{{ v }}</span></span>
+                            {% endfor %}
+                        </div>
+                        {% if alert.justificacion_cvss %}<div style="margin-top:8px;">{{ alert.justificacion_cvss }}</div>{% endif %}
+                        {% else %}
+                        <span class="cvss-nd">Sin datos CVSS (análisis pendiente).</span>
+                        {% endif %}
+                    </div>
+                    <div>
+                        <h4>Evidencia faltante</h4>
+                        {% if alert.evidencia_faltante %}
+                        <ul class="miss-list">
+                            {% for e in alert.evidencia_faltante %}<li>{{ e }}</li>{% endfor %}
+                        </ul>
+                        {% else %}
+                        <span class="cvss-nd">—</span>
+                        {% endif %}
+                    </div>
+                    <div class="full">
+                        <h4>Recomendación</h4>
+                        {{ alert.recomendacion_ia|default:"—" }}
+                    </div>
+                    {% endif %}
+
+                    {% if not alert.analisis_legado %}
+                    <div class="full">
+                        <h4>Origen del análisis</h4>
+                        <span class="prov-tag">{{ alert.proveedor_ia|default:"—" }}</span>
+                        <span class="prov-tag">{{ alert.modelo_ia|default:"modelo n/d" }}</span>
+                        {% if alert.analizado_en %}<span class="prov-tag">{{ alert.analizado_en }}</span>{% endif %}
+                        {% if alert.estado_analisis %}<span class="prov-tag">estado: {{ alert.estado_analisis }}</span>{% endif %}
+                        {% if alert.contexto_ia_snapshot %}<span class="prov-tag">contexto congelado ✓</span>{% endif %}
+                    </div>
+                    {% endif %}
+
+                    {% if alert.tiene_correccion_humana %}
+                    <div class="corr-note">
+                        <b>Corrección humana:</b> el veredicto vigente es
+                        <b>{{ alert.get_correccion_veredicto_display }}</b>.
+                        Veredicto original de la IA:
+                        <b>{% if alert.veredicto_ia %}{{ alert.get_veredicto_ia_display }}{% else %}—{% endif %}</b>
+                        (conservado, no sobrescrito).<br>
+                        {% if alert.correccion_autor %}Por {{ alert.correccion_autor.username }}{% endif %}
+                        {% if alert.correccion_fecha %} · {{ alert.correccion_fecha }}{% endif %}
+                        {% if alert.correccion_motivo %}<br>Motivo: {{ alert.correccion_motivo }}{% endif %}
+                    </div>
+                    {% endif %}
+                </div>
+            </td>
+        </tr>
+        {% endwith %}
+        {% empty %}
         <tr>
-            <td>{{ alert.descripcion }}</td>
-            <td>{{ alert.severidad }}</td>
-            <td>{{ alert.fuente }}</td>
-            <td>{{ alert.timestamp|default:alert.creado_en }}</td>
-            <td>{{ alert.riesgo_ia }}</td>
-            <td>{{ alert.explicacion_ia }}</td>
+            <td colspan="10" style="background:transparent; border:none;">
+                <div class="empty-state">
+                    <div class="e-icon">🔍</div>
+                    <p>No hay alertas con los filtros aplicados.</p>
+                </div>
+            </td>
         </tr>
         {% endfor %}
-    </table>
+    </tbody>
+</table>
+</div>
 
-    {% if not alerts %}
-    <div class="empty-message">
-        No alerts available yet.
-    </div>
+<!-- Paginación -->
+{% if page_obj.paginator.num_pages > 1 %}
+<div class="pagination">
+    {% if page_obj.has_previous %}
+        <a href="?{{ query_string }}&page=1" class="pg">«</a>
+        <a href="?{{ query_string }}&page={{ page_obj.previous_page_number }}" class="pg">‹</a>
+    {% else %}
+        <span class="pg disabled">«</span>
+        <span class="pg disabled">‹</span>
     {% endif %}
 
+    {% for num in page_obj.paginator.page_range %}
+        {% if page_obj.number == num %}
+            <span class="pg active">{{ num }}</span>
+        {% elif num >= page_obj.number|add:"-3" and num <= page_obj.number|add:"3" %}
+            <a href="?{{ query_string }}&page={{ num }}" class="pg">{{ num }}</a>
+        {% endif %}
+    {% endfor %}
+
+    {% if page_obj.has_next %}
+        <a href="?{{ query_string }}&page={{ page_obj.next_page_number }}" class="pg">›</a>
+        <a href="?{{ query_string }}&page={{ page_obj.paginator.num_pages }}" class="pg">»</a>
+    {% else %}
+        <span class="pg disabled">›</span>
+        <span class="pg disabled">»</span>
+    {% endif %}
+
+    <span class="pg-info">{{ page_obj.start_index }}–{{ page_obj.end_index }} de {{ page_obj.paginator.count }}</span>
+</div>
+{% endif %}
+
+<script>
+function toggleDetail(id) {
+    var row = document.getElementById('dt-' + id);
+    var btn = document.getElementById('dt-btn-' + id);
+    if (row.style.display === 'none' || row.style.display === '') {
+        row.style.display = 'table-row';
+        if (btn) btn.textContent = 'detalle ↑';
+    } else {
+        row.style.display = 'none';
+        if (btn) btn.textContent = 'detalle ↓';
+    }
+}
+function toggleReason(id) {
+    var preview = document.getElementById('preview-' + id);
+    var full    = document.getElementById('full-'    + id);
+    var btn     = document.getElementById('btn-'     + id);
+    if (full.style.display === 'none') {
+        full.style.display    = 'block';
+        preview.style.display = 'none';
+        btn.textContent       = 'ver menos ↑';
+    } else {
+        full.style.display    = 'none';
+        preview.style.display = '';
+        btn.textContent       = 'ver más ↓';
+    }
+}
+</script>
 </body>
 </html>
-

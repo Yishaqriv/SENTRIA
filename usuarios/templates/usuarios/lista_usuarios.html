@@ -3,42 +3,247 @@
 <head>
     <meta charset="UTF-8">
     <title>Usuarios | SENTRIA</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            margin: 0;
+            padding: 0;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 0.05em;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 9px 18px;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 14px;
+            text-decoration: none;
+            cursor: pointer;
+            border: none;
+        }
+
+        .btn-back {
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+        }
+
+        .btn-back:hover {
+            background: #334155;
+            color: white;
+        }
+
+        .btn-create {
+            background: #1e3a5f;
+            color: #7dd3fc;
+            border: 1px solid #2563eb;
+        }
+
+        .btn-create:hover {
+            background: #1d4ed8;
+            color: white;
+        }
+
+        .btn-edit {
+            background: #1e3a2a;
+            color: #6ee7b7;
+            border: 1px solid #059669;
+            padding: 5px 12px;
+            font-size: 13px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        .btn-edit:hover {
+            background: #059669;
+            color: white;
+        }
+
+        .btn-delete {
+            background: #3b0a0a;
+            color: #f87171;
+            border: 1px solid #dc2626;
+            padding: 5px 12px;
+            font-size: 13px;
+            border-radius: 5px;
+            text-decoration: none;
+            font-weight: bold;
+        }
+
+        .btn-delete:hover {
+            background: #dc2626;
+            color: white;
+        }
+
+        .content {
+            padding: 30px 40px;
+        }
+
+        .section-title {
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #e2e8f0;
+        }
+
+        .messages {
+            margin-bottom: 20px;
+        }
+
+        .message {
+            padding: 10px 16px;
+            border-radius: 6px;
+            background: #0d2818;
+            border: 1px solid #059669;
+            color: #6ee7b7;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #0b1324;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 13px 16px;
+            border-bottom: 1px solid #1e293b;
+            text-align: left;
+            font-size: 14px;
+        }
+
+        th {
+            background: #1e293b;
+            color: #94a3b8;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.05em;
+        }
+
+        tr:hover td {
+            background: #0d1a2e;
+        }
+
+        .rol-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .rol-ADMIN    { background: #1e3a5f; color: #7dd3fc; border: 1px solid #2563eb; }
+        .rol-ANALISTA { background: #1a2e1a; color: #6ee7b7; border: 1px solid #059669; }
+        .rol-INVITADO { background: #1e1e2e; color: #94a3b8; border: 1px solid #475569; }
+
+        .activo-si { color: #4ade80; font-weight: bold; }
+        .activo-no { color: #f87171; }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .empty-message {
+            text-align: center;
+            padding: 50px;
+            color: #475569;
+        }
+    </style>
 </head>
 <body>
-    <h1>Gestión de usuarios</h1>
+
+<div class="header">
+    <h1>SENTRIA &mdash; Gestión de usuarios</h1>
+    <div class="header-right">
+        <a href="{% url 'index' %}" class="btn btn-back">← Volver al dashboard</a>
+        <a href="{% url 'crear_usuario' %}" class="btn btn-create">+ Nuevo usuario</a>
+    </div>
+</div>
+
+<div class="content">
 
     {% if messages %}
+    <div class="messages">
         {% for message in messages %}
-            <p>{{ message }}</p>
+        <div class="message">✓ {{ message }}</div>
         {% endfor %}
+    </div>
     {% endif %}
 
-    <a href="{% url 'crear_usuario' %}">Crear usuario</a>
+    <div class="section-title">Usuarios registrados ({{ usuarios|length }})</div>
 
-    <table border="1" cellpadding="8">
-        <tr>
-            <th>Usuario</th>
-            <th>Nombre</th>
-            <th>Correo</th>
-            <th>Rol</th>
-            <th>Activo</th>
-            <th>Acciones</th>
-        </tr>
-
-        {% for usuario in usuarios %}
-        <tr>
-            <td>{{ usuario.username }}</td>
-            <td>{{ usuario.first_name }} {{ usuario.last_name }}</td>
-            <td>{{ usuario.email }}</td>
-            <td>{{ usuario.perfilusuario.get_rol_display }}</td>
-            <td>{{ usuario.perfilusuario.activo }}</td>
-            <td>
-                <a href="{% url 'editar_usuario' usuario.id %}">Editar</a>
-                |
-                <a href="{% url 'eliminar_usuario' usuario.id %}">Eliminar</a>
-            </td>
-        </tr>
-        {% endfor %}
+    <table>
+        <thead>
+            <tr>
+                <th>Usuario</th>
+                <th>Nombre completo</th>
+                <th>Correo</th>
+                <th>Rol</th>
+                <th>Activo</th>
+                <th>Acciones</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for usuario in usuarios %}
+            <tr>
+                <td><strong>{{ usuario.username }}</strong></td>
+                <td>{{ usuario.first_name }} {{ usuario.last_name }}</td>
+                <td style="color:#94a3b8;">{{ usuario.email|default:"—" }}</td>
+                <td>
+                    <span class="rol-badge rol-{{ usuario.perfilusuario.rol }}">
+                        {{ usuario.perfilusuario.get_rol_display }}
+                    </span>
+                </td>
+                <td>
+                    {% if usuario.perfilusuario.activo %}
+                        <span class="activo-si">● Activo</span>
+                    {% else %}
+                        <span class="activo-no">● Inactivo</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div class="actions">
+                        <a href="{% url 'editar_usuario' usuario.id %}" class="btn-edit">Editar</a>
+                        <a href="{% url 'eliminar_usuario' usuario.id %}" class="btn-delete">Eliminar</a>
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" class="empty-message">No hay usuarios registrados.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
     </table>
+
+</div>
+
 </body>
 </html>

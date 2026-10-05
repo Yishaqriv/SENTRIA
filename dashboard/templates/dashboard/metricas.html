@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Métricas del clasificador | SENTRIA</title>
+    <style>
+        *, *::before, *::after { box-sizing:border-box; }
+        body { font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+               background:#070d1a; color:#d8e8f8; margin:0; font-size:15px; }
+        .header { display:flex; justify-content:space-between; align-items:center;
+                  padding:15px 36px; background:#0b1525; border-bottom:1px solid #14243c; }
+        .header h1 { margin:0; font-size:20px; letter-spacing:.04em; color:#e8f2ff; }
+        .btn-back { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:600;
+                    text-decoration:none; background:#132339; color:#9ab8d8; border:1px solid #23405f; }
+        .wrap { padding:24px 36px; max-width:960px; margin:0 auto; }
+        .card { background:#0b1525; border:1px solid #1a3050; border-radius:12px; padding:22px; margin-bottom:20px; }
+        .card h2 { margin:0 0 6px; font-size:16px; color:#e8f2ff; }
+        .card p.sub { margin:0 0 16px; font-size:13px; color:#7d99bb; line-height:1.5; }
+        code { font-family:ui-monospace, Menlo, monospace; font-size:12px; color:#9fd0ff; }
+        .matrix { display:grid; grid-template-columns:150px 1fr 1fr; gap:6px; max-width:560px; margin:8px 0 4px; }
+        .matrix .h { font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#6f8cb0; padding:8px; text-align:center; }
+        .matrix .cell { background:#0a1220; border:1px solid #16283f; border-radius:8px; padding:14px 10px; text-align:center; }
+        .matrix .cell .n { font-size:24px; font-weight:800; color:#e8f2ff; }
+        .matrix .cell .l { font-size:11px; color:#6f8cb0; margin-top:2px; }
+        .matrix .rowlabel { display:flex; align-items:center; justify-content:flex-end; font-size:12px; color:#9ab8d8; padding-right:8px; text-align:right; }
+        .cell.tp { border-color:rgba(20,160,80,0.4); } .cell.tn { border-color:rgba(20,160,80,0.3); }
+        .cell.fp { border-color:rgba(224,88,64,0.4); } .cell.fn { border-color:rgba(224,148,20,0.4); }
+        .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-top:6px; }
+        .kpi { background:#0a1220; border:1px solid #16283f; border-radius:8px; padding:14px; }
+        .kpi .n { font-size:22px; font-weight:800; color:#e8f2ff; }
+        .kpi .nc { font-size:15px; font-weight:700; color:#f0b850; }
+        .kpi .l { font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#6f8cb0; margin-top:3px; }
+        .kpi .d { font-size:11px; color:#5a789a; margin-top:4px; }
+        .note { font-size:12px; color:#5a789a; margin-top:8px; line-height:1.5; }
+        .tag { display:inline-block; padding:2px 8px; border-radius:5px; font-size:11px; font-weight:700;
+               background:rgba(224,88,64,0.14); color:#f0906c; border:1px solid rgba(224,88,64,0.34); }
+        .warn { background:rgba(224,148,20,0.16); border:1px solid rgba(224,148,20,0.5);
+                color:#f0c05a; border-radius:10px; padding:16px 20px; margin-bottom:20px; font-size:14px; }
+        .warn b { color:#ffd680; }
+        .nchip { font-size:12px; color:#8fb8e8; font-weight:700; }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>SENTRIA — Métricas del clasificador</h1>
+    <a href="{% url 'index' %}" class="btn-back">← Volver al dashboard</a>
+</div>
+
+<div class="wrap">
+    {% if muestra_insuficiente %}
+    <div class="warn">
+        ⚠ <b>Muestra insuficiente</b> (n = {{ n_etiquetado }} &lt; 30): resultados preliminares,
+        no representativos del rendimiento del clasificador.
+    </div>
+    {% endif %}
+    <div class="card">
+        <h2>Base de evaluación</h2>
+        <p class="sub">
+            Se calcula <b>sólo</b> sobre alertas con <b>verdad de terreno humana</b> (revisión confirmada o corregida).
+            Clase positiva = <span class="tag">REQUIERE_ATENCION</span>. No se usa el campo <code>estado</code> antiguo;
+            las alertas sin revisión humana no cuentan.
+        </p>
+        <div class="kpis">
+            <div class="kpi"><div class="n">{{ m.total_etiquetado }}</div><div class="l">Alertas etiquetadas</div></div>
+            <div class="kpi"><div class="n">{{ rev.confirmadas }}</div><div class="l">Revisiones confirmadas</div></div>
+            <div class="kpi"><div class="n">{{ rev.corregidas }}</div><div class="l">Revisiones corregidas</div></div>
+            <div class="kpi"><div class="n">{{ rev.excluidas }}</div><div class="l">Excluidas (sin verdad)</div></div>
+            <div class="kpi"><div class="n">{{ n_completed }}</div><div class="l">Análisis COMPLETED</div></div>
+        </div>
+        {% if m.sin_veredicto_ia %}
+        <p class="note">{{ m.sin_veredicto_ia }} revisión(es) con verdad de terreno pero sin veredicto de IA COMPLETED: excluidas del cálculo.</p>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Matriz de confusión</h2>
+        <div class="matrix">
+            <div class="h"></div>
+            <div class="h">Humano: Requiere atención</div>
+            <div class="h">Humano: Falso positivo</div>
+
+            <div class="rowlabel">IA: Requiere atención</div>
+            <div class="cell tp"><div class="n">{{ m.tp }}</div><div class="l">TP</div></div>
+            <div class="cell fp"><div class="n">{{ m.fp }}</div><div class="l">FP</div></div>
+
+            <div class="rowlabel">IA: Falso positivo</div>
+            <div class="cell fn"><div class="n">{{ m.fn }}</div><div class="l">FN</div></div>
+            <div class="cell tn"><div class="n">{{ m.tn }}</div><div class="l">TN</div></div>
+        </div>
+        <p class="note">
+            TP: IA y humano coinciden en «requiere atención». · FP: IA pidió atención, el humano dijo falso positivo. ·
+            TN: ambos «falso positivo». · FN: IA dijo falso positivo, el humano exige atención.
+        </p>
+    </div>
+
+    <div class="card">
+        <h2>Métricas <span class="nchip">n etiquetado = {{ n_etiquetado }}</span></h2>
+        <div class="kpis">
+            <div class="kpi">
+                <div class="{% if metricas_pct.fpr is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.fpr is None %}NO CALCULABLE{% else %}{{ metricas_pct.fpr }} %{% endif %}</div>
+                <div class="l">FPR (falsos positivos)</div>
+                <div class="d">FP / (FP + TN) = {{ m.fp }} / {{ m.fpr_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.fnr is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.fnr is None %}NO CALCULABLE{% else %}{{ metricas_pct.fnr }} %{% endif %}</div>
+                <div class="l">FNR (falsos negativos)</div>
+                <div class="d">FN / (FN + TP) = {{ m.fn }} / {{ m.fnr_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.precision is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.precision is None %}NO CALCULABLE{% else %}{{ metricas_pct.precision }} %{% endif %}</div>
+                <div class="l">Precisión</div>
+                <div class="d">TP / (TP + FP) = {{ m.tp }} / {{ m.precision_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.recall is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.recall is None %}NO CALCULABLE{% else %}{{ metricas_pct.recall }} %{% endif %}</div>
+                <div class="l">Recall (sensibilidad)</div>
+                <div class="d">TP / (TP + FN) = {{ m.tp }} / {{ m.recall_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.accuracy is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.accuracy is None %}NO CALCULABLE{% else %}{{ metricas_pct.accuracy }} %{% endif %}</div>
+                <div class="l">Exactitud</div>
+                <div class="d">(TP + TN) / n = {{ m.tp|add:m.tn }} / {{ m.total_etiquetado }} · n = {{ n_etiquetado }}</div>
+            </div>
+        </div>
+        <p class="note">
+            «NO CALCULABLE» cuando el denominador es cero (aún no hay casos suficientes de ese tipo).
+            {% if muestra_insuficiente %}<b>Con n = {{ n_etiquetado }} (&lt; 30) las cifras son preliminares y no concluyentes.</b>{% endif %}
+        </p>
+    </div>
+</div>
+</body>
+</html>

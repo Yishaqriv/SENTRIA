@@ -1,0 +1,144 @@
+{% load dashboard_extras %}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ventanas de mantenimiento | SENTRIA</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+               background: #070d1a; color: #d8e8f8; margin: 0; font-size: 15px; }
+        .header { display:flex; justify-content:space-between; align-items:center;
+                  padding: 15px 36px; background:#0b1525; border-bottom:1px solid #14243c; }
+        .header h1 { margin:0; font-size: 20px; letter-spacing:.04em; color:#e8f2ff; }
+        .btn-back { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:600;
+                    text-decoration:none; background:#132339; color:#9ab8d8; border:1px solid #23405f; }
+        .wrap { padding: 24px 36px; max-width: 1100px; margin: 0 auto; }
+        .flash { padding:10px 14px; border-radius:7px; margin-bottom:12px; font-size:13px; }
+        .flash-success { background:rgba(20,160,80,0.14); color:#7fdca4; border:1px solid rgba(20,160,80,0.35); }
+        .flash-error   { background:rgba(224,88,64,0.14); color:#f0a68c; border:1px solid rgba(224,88,64,0.35); }
+        .flash-info    { background:rgba(40,100,200,0.14); color:#8fb8e8; border:1px solid rgba(40,100,200,0.35); }
+        .card { background:#0b1525; border:1px solid #1a3050; border-radius:12px; padding:20px 22px; margin-bottom:22px; }
+        .card h2 { margin:0 0 14px; font-size:16px; color:#e8f2ff; }
+        .form-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px 16px; }
+        .fg label { display:block; font-size:12px; color:#7d99bb; margin-bottom:4px; }
+        .fg input, .fg select, .fg textarea {
+            width:100%; background:#0a1220; border:1px solid #16283f; border-radius:6px;
+            color:#e8f2ff; padding:8px; font-size:13px; font-family:inherit; }
+        .btn-ok { margin-top:14px; padding:10px 20px; background:#1d4ed8; color:#fff; border:none;
+                  border-radius:7px; font-size:14px; font-weight:700; cursor:pointer; }
+        .nota { font-size:12px; color:#5a789a; margin-top:8px; }
+        .table-wrap { overflow-x:auto; }
+        table { width:100%; border-collapse:collapse; min-width: 720px; }
+        th, td { text-align:left; padding:9px 12px; font-size:13px; border-bottom:1px solid #14243c; }
+        th { color:#6f8cb0; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
+        .pill { display:inline-block; padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700; }
+        .p-activa { background:rgba(20,160,80,0.15); color:#5fd88f; border:1px solid rgba(20,160,80,0.35); }
+        .p-cancelada { background:rgba(120,140,168,0.14); color:#9ab0c8; border:1px dashed rgba(140,160,190,0.4); }
+        .p-vigente { background:rgba(224,148,20,0.16); color:#f0b850; border:1px solid rgba(224,148,20,0.4); margin-left:6px; }
+        .btn-cancel { padding:5px 12px; background:rgba(160,80,192,0.14); color:#cc90ee;
+                      border:1px solid rgba(160,80,192,0.4); border-radius:5px; font-size:12px; font-weight:600; cursor:pointer; }
+        .empty { color:#5a789a; padding:20px; text-align:center; }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>SENTRIA — Ventanas de mantenimiento</h1>
+    <a href="{% url 'index' %}" class="btn-back">← Volver al dashboard</a>
+</div>
+
+<div class="wrap">
+    {% if messages %}{% for m in messages %}<div class="flash flash-{{ m.tags }}">{{ m }}</div>{% endfor %}{% endif %}
+
+    {% if puede_gestionar %}
+    <div class="card">
+        <h2>Declarar un mantenimiento autorizado</h2>
+        <form method="POST">
+            {% csrf_token %}
+            <div class="form-grid">
+                <div class="fg">
+                    <label>Activo lógico</label>
+                    <select name="activo_logico" required>
+                        <option value="">— elige —</option>
+                        {% for a in activos %}<option value="{{ a.id }}">{{ a.identificador }} · {{ a.nombre_visible }} ({{ a.zona_horaria }})</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Categoría</label>
+                    <select name="categoria" required>
+                        {% for val, txt in categorias %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Inicio (hora local del activo)</label>
+                    <input type="datetime-local" name="inicio" required>
+                </div>
+                <div class="fg">
+                    <label>Fin (hora local del activo)</label>
+                    <input type="datetime-local" name="fin" required>
+                </div>
+                <div class="fg" style="grid-column: 1 / -1;">
+                    <label>Descripción breve (opcional — no se envía al modelo de IA)</label>
+                    <input type="text" name="descripcion" maxlength="280" placeholder="p. ej. actualización de paquetes programada">
+                </div>
+            </div>
+            <button type="submit" class="btn-ok">Crear ventana</button>
+            <div class="nota">
+                El fin debe ser posterior al inicio. No se permiten solapamientos de ventanas activas sobre el mismo activo.
+                Estar dentro de una ventana <b>no</b> convierte una alerta en falso positivo automáticamente.
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
+    <div class="card">
+        <h2>Ventanas registradas</h2>
+        <div class="nota">Inicio y fin se muestran en la zona horaria de cada activo (p. ej. <b>America/Bogota</b> para SRV-01). Internamente se almacenan en UTC.</div>
+        <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Activo</th><th>Categoría</th>
+                    <th>Inicio (hora local del activo)</th><th>Fin (hora local del activo)</th><th>Estado</th>
+                    <th>Creada por</th>{% if puede_gestionar %}<th></th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in ventanas %}
+                <tr>
+                    <td>{{ v.activo_logico.identificador }}<br>
+                        <span style="font-size:11px; color:#5a789a;">{{ v.activo_logico.zona_horaria }}</span></td>
+                    <td>{{ v.get_categoria_display }}</td>
+                    <td>{{ v.inicio|en_zona:v.activo_logico.zona_horaria }}</td>
+                    <td>{{ v.fin|en_zona:v.activo_logico.zona_horaria }}</td>
+                    <td>
+                        {% if v.estado == 'ACTIVA' %}<span class="pill p-activa">Activa</span>
+                            {% if v.inicio <= ahora and v.fin >= ahora %}<span class="pill p-vigente">vigente ahora</span>{% endif %}
+                        {% else %}<span class="pill p-cancelada">Cancelada</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if v.creada_por %}{{ v.creada_por.username }}{% else %}—{% endif %}
+                        {% if v.estado == 'CANCELADA' %}<br><span style="font-size:11px; color:#5a789a;">canc. {{ v.cancelada_en|en_zona:v.activo_logico.zona_horaria }}{% if v.cancelada_por %} · {{ v.cancelada_por.username }}{% endif %}</span>{% endif %}
+                    </td>
+                    {% if puede_gestionar %}
+                    <td>
+                        {% if v.estado == 'ACTIVA' %}
+                        <form method="POST" action="{% url 'mantenimiento_cancelar' v.id %}" style="display:inline;"
+                              onsubmit="return confirm('¿Cancelar esta ventana de mantenimiento? Se conserva para auditoría.');">
+                            {% csrf_token %}
+                            <button type="submit" class="btn-cancel">Cancelar</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                    {% endif %}
+                </tr>
+                {% empty %}
+                <tr><td colspan="7"><div class="empty">No hay ventanas de mantenimiento registradas.</div></td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+</body>
+</html>

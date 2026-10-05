@@ -1,0 +1,123 @@
+{% load dashboard_extras %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Corregir veredicto IA | SENTRIA</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+               background: #070d1a; color: #d8e8f8; margin: 0; }
+        .header { display:flex; justify-content:space-between; align-items:center;
+                  padding: 16px 36px; background:#0b1525; border-bottom:1px solid #14243c; }
+        .header h1 { margin:0; font-size: 20px; letter-spacing:.04em; color:#e8f2ff; }
+        .btn-back { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:600;
+                    text-decoration:none; background:#132339; color:#9ab8d8; border:1px solid #23405f; }
+        .content { display:flex; justify-content:center; padding: 44px 20px; }
+        .card { background:#0b1525; border:1px solid #1a3050; border-radius:12px;
+                padding: 32px; width:100%; max-width: 620px; }
+        .card h2 { margin:0 0 6px; font-size:18px; color:#e8f2ff; }
+        .card .sub { margin:0 0 22px; font-size:13px; color:#7d99bb; }
+        .box { background:#0a1220; border:1px solid #16283f; border-radius:8px;
+               padding:14px 16px; margin-bottom:16px; font-size:13.5px; line-height:1.65; color:#c8daf0; }
+        .box h3 { margin:0 0 8px; font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:#6f8cb0; }
+        .box b { color:#e8f2ff; }
+        .pill { display:inline-block; padding:3px 10px; border-radius:6px; font-size:12px; font-weight:700; }
+        .p-at { background:rgba(224,88,64,0.16); color:#f0906c; border:1px solid rgba(224,88,64,0.38); }
+        .p-fp { background:rgba(152,184,32,0.14); color:#c0dd58; border:1px solid rgba(152,184,32,0.34); }
+        .cvss span { display:inline-block; margin:2px 12px 2px 0; color:#b8d0ea; }
+        .cvss .nd { color:#5878a0; }
+        .opts { display:flex; flex-direction:column; gap:8px; margin:10px 0; }
+        .opts label { display:flex; align-items:center; gap:8px; font-size:14px; color:#c8daf0; cursor:pointer; }
+        textarea { width:100%; margin-top:8px; background:#0a1220; border:1px solid #16283f;
+                   border-radius:6px; color:#e8f2ff; padding:9px; font-size:13px; font-family:inherit; }
+        .req { color:#f0906c; }
+        .btn-row { display:flex; gap:12px; margin-top:22px; }
+        .btn-row a, .btn-row button { flex:1; padding:11px; border-radius:7px; font-size:14px;
+                   font-weight:700; text-align:center; text-decoration:none; cursor:pointer; }
+        .btn-cancel { background:#132339; color:#9ab8d8; border:1px solid #23405f; }
+        .btn-ok { background:#1d4ed8; color:#fff; border:none; }
+        .flash { padding:10px 14px; border-radius:7px; margin-bottom:14px; font-size:13px;
+                 background:rgba(224,88,64,0.14); color:#f0a68c; border:1px solid rgba(224,88,64,0.35); }
+    </style>
+</head>
+<body>
+<div class="header">
+    <h1>SENTRIA — Corregir veredicto de la IA</h1>
+    <a href="{% url 'index' %}" class="btn-back">← Volver</a>
+</div>
+
+<div class="content">
+  <div class="card">
+    <h2>Alerta #{{ alerta.id }}</h2>
+    <p class="sub">La corrección es opcional y motivada. El veredicto original de la IA se conserva sin cambios.</p>
+
+    {% if messages %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endif %}
+
+    <div class="box">
+        <h3>Alerta</h3>
+        {{ alerta.descripcion|truncatechars:200 }}<br>
+        <b>Severidad Wazuh:</b> {{ alerta.severidad|default:"—" }}
+        {% if alerta.activo_logico %} &nbsp;·&nbsp; <b>Activo:</b> {{ alerta.activo_logico.identificador }} ({{ alerta.activo_logico.get_criticidad_display }}){% endif %}
+    </div>
+
+    <div class="box">
+        <h3>Veredicto automático de la IA</h3>
+        {% if alerta.veredicto_ia == 'REQUIERE_ATENCION' %}<span class="pill p-at">Requiere atención</span>
+        {% elif alerta.veredicto_ia == 'FALSO_POSITIVO' %}<span class="pill p-fp">Falso positivo</span>
+        {% else %}—{% endif %}
+        &nbsp;·&nbsp; <b>Riesgo:</b> {{ alerta.riesgo_ia|default:"—" }}
+        {% if alerta.tiene_correccion_humana %}<br><b>Corrección vigente:</b> {{ alerta.get_correccion_veredicto_display }}{% endif %}
+        {% if alerta.explicacion_ia %}<br><br>{{ alerta.explicacion_ia }}{% endif %}
+    </div>
+
+    {% if alerta.factores_cvss %}
+    <div class="box cvss">
+        <h3>CVSS v3 (en español)</h3>
+        {% for k, v in alerta.factores_cvss.items %}
+        <span><b>{{ k|cvss_es }}:</b> <span class="{% if v == 'no_determinado' %}nd{% endif %}">{{ v }}</span></span>
+        {% endfor %}
+        {% if alerta.justificacion_cvss %}<div style="margin-top:8px;">{{ alerta.justificacion_cvss }}</div>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if alerta.recomendacion_ia %}
+    <div class="box"><h3>Recomendación</h3>{{ alerta.recomendacion_ia }}</div>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+        <div class="box">
+            <h3>Corrección del veredicto <span class="req">*</span></h3>
+            <div class="opts">
+                <label><input type="radio" name="correccion_veredicto" value="REQUIERE_ATENCION"> Requiere atención</label>
+                <label><input type="radio" name="correccion_veredicto" value="FALSO_POSITIVO"> Falso positivo</label>
+            </div>
+
+            <label style="font-size:13px; color:#7d99bb; display:block; margin-top:12px;">Categoría del motivo <span class="req">*</span></label>
+            <select name="motivo_categoria" required
+                    style="width:100%; background:#0a1220; border:1px solid #16283f; border-radius:6px; color:#e8f2ff; padding:9px; font-size:13px;">
+                <option value="">— elige —</option>
+                {% for val, txt in motivos %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+            </select>
+
+            <label style="font-size:13px; color:#7d99bb; display:block; margin-top:12px;">Riesgo revisado (opcional)</label>
+            <select name="riesgo_revisado"
+                    style="width:100%; background:#0a1220; border:1px solid #16283f; border-radius:6px; color:#e8f2ff; padding:9px; font-size:13px;">
+                <option value="">(sin revisar aún)</option>
+                {% for val, txt in riesgos %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+            </select>
+
+            <label style="font-size:13px; color:#7d99bb; display:block; margin-top:12px;">Nota (opcional)</label>
+            <textarea name="nota" rows="3"
+                      placeholder="Sólo si la categoría no basta. No hace falta una explicación extensa."></textarea>
+        </div>
+        <div class="btn-row">
+            <a href="{% url 'index' %}" class="btn-cancel">Cancelar</a>
+            <button type="submit" class="btn-ok">Registrar corrección</button>
+        </div>
+    </form>
+  </div>
+</div>
+</body>
+</html>

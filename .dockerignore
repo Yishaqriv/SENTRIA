@@ -1,0 +1,12 @@
+.env
+.git
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+sentria-venv/
+venv/
+db.sqlite3
+*.log
+.vscode/
+*.swp

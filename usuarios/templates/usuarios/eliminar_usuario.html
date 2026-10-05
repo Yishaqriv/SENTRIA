@@ -3,19 +3,159 @@
 <head>
     <meta charset="UTF-8">
     <title>Eliminar usuario | SENTRIA</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: white;
+            margin: 0;
+            padding: 0;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 40px;
+            border-bottom: 1px solid #1e293b;
+        }
+
+        .header h1 {
+            margin: 0;
+            font-size: 28px;
+            letter-spacing: 0.05em;
+        }
+
+        .btn-back {
+            display: inline-block;
+            padding: 9px 18px;
+            border-radius: 6px;
+            font-weight: bold;
+            font-size: 14px;
+            text-decoration: none;
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+        }
+
+        .btn-back:hover {
+            background: #334155;
+            color: white;
+        }
+
+        .content {
+            display: flex;
+            justify-content: center;
+            padding: 60px 20px;
+        }
+
+        .confirm-card {
+            background: #0b1324;
+            border: 1px solid #3b0a0a;
+            border-radius: 12px;
+            padding: 40px;
+            width: 100%;
+            max-width: 440px;
+            text-align: center;
+        }
+
+        .confirm-card .icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+
+        .confirm-card h2 {
+            margin: 0 0 12px;
+            font-size: 22px;
+            color: #f87171;
+        }
+
+        .confirm-card p {
+            font-size: 15px;
+            color: #94a3b8;
+            margin-bottom: 8px;
+            line-height: 1.6;
+        }
+
+        .username-highlight {
+            color: #fca5a5;
+            font-weight: bold;
+            font-size: 18px;
+            display: block;
+            margin: 12px 0 24px;
+        }
+
+        .warning-note {
+            font-size: 13px;
+            color: #475569;
+            margin-bottom: 28px;
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        .btn-cancel {
+            padding: 12px 24px;
+            background: #1e293b;
+            color: #94a3b8;
+            border: 1px solid #334155;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: bold;
+            text-decoration: none;
+            transition: background 0.15s;
+        }
+
+        .btn-cancel:hover {
+            background: #334155;
+            color: white;
+        }
+
+        .btn-confirm-delete {
+            padding: 12px 24px;
+            background: #7f1d1d;
+            color: #fca5a5;
+            border: 1px solid #dc2626;
+            border-radius: 7px;
+            font-size: 15px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .btn-confirm-delete:hover {
+            background: #dc2626;
+            color: white;
+        }
+    </style>
 </head>
 <body>
 
-<h1>Eliminar usuario</h1>
+<div class="header">
+    <h1>SENTRIA &mdash; Eliminar usuario</h1>
+    <a href="{% url 'lista_usuarios' %}" class="btn-back">← Volver</a>
+</div>
 
-<p>¿Seguro que quieres eliminar a <strong>{{ usuario.username }}</strong>?</p>
+<div class="content">
+    <div class="confirm-card">
+        <div class="icon">⚠️</div>
+        <h2>Confirmar eliminación</h2>
+        <p>Estás a punto de eliminar permanentemente la cuenta de:</p>
+        <span class="username-highlight">{{ usuario.username }}</span>
+        <p class="warning-note">Esta acción no se puede deshacer.</p>
 
-<form method="POST">
-    {% csrf_token %}
-    <button type="submit">Sí, eliminar</button>
-</form>
-
-<a href="{% url 'lista_usuarios' %}">Cancelar</a>
+        <div class="btn-row">
+            <a href="{% url 'lista_usuarios' %}" class="btn-cancel">Cancelar</a>
+            <form method="POST" style="display:inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn-confirm-delete">Sí, eliminar</button>
+            </form>
+        </div>
+    </div>
+</div>
 
 </body>
 </html>

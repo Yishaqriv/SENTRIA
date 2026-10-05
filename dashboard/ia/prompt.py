@@ -1,0 +1,253 @@
+"""
+Construcción de la entrada (capa E) y del prompt para el proveedor de IA.
+
+La capa E contiene SOLO información que un analista tendría normalmente:
+- de Wazuh: descripción (anonimizada), nivel, grupos, rule.id;
+- del ActivoLogico configurado: tipo, criticidad, familia/rol de SO, contexto
+  autorizado, ventana operativa (calculada objetivamente contra la hora de la
+  alerta);
+- cálculo objetivo: resumen de evidencia técnica, `attack_vector` conservador.
+
+Nunca se incluyen: agent.id, hostname, IP ni campos de las capas P/S.
+Sin ActivoLogico NO se construye entrada para el prompt: la política de
+elegibilidad marca la alerta OMITIDO_POLITICA (SIN_CONTEXTO_ACTIVO).
+"""
+from __future__ import annotations
+
+import datetime
+
+from .anonimizacion import anonimizar_texto
+from .contrato import CVSS_CLAVES
+from .evidencia import construir_evidencia_tecnica
+
+# Estados de ventana de mantenimiento (capa E).
+#   dentro_ventana_declarada : hay un mantenimiento autorizado que cubre la alerta.
+#   sin_ventana_declarada    : hay activo y hora, pero ninguna ventana coincide.
+#   indeterminado            : falta activo o timestamp fiable.
+# NUNCA se usa "fuera_ventana_declarada": no hay evidencia explícita para afirmarlo.
+# Estar dentro de una ventana NO convierte la alerta en FALSO_POSITIVO.
+VENTANA_MANT_ESTADOS = (
+    "dentro_ventana_declarada", "sin_ventana_declarada", "indeterminado",
+)
+
+
+def _estado_ventana_mantenimiento(alert, activo=None, momento=None):
+    """
+    Devuelve (estado, categoria|None). `alert['maintenance_window']` explícito
+    (pruebas / override) tiene prioridad; si no, se consulta el modelo.
+    """
+    v = str(alert.get("maintenance_window", "") or "").strip()
+    if v in VENTANA_MANT_ESTADOS:
+        return v, alert.get("maintenance_category")
+    if "maintenance_window_declared" in alert:  # compatibilidad con el bool antiguo
+        return ("dentro_ventana_declarada" if alert["maintenance_window_declared"]
+                else "sin_ventana_declarada"), None
+    try:
+        from dashboard.mantenimiento import estado_para
+        return estado_para(activo, momento)
+    except Exception:
+        return "indeterminado", None
+
+
+def _texto_evidencia(nivel, grupos, ev):
+    partes = [f"Regla de Wazuh nivel {nivel if nivel is not None else 'no determinado'} "
+              f"({', '.join(grupos) or 'sin grupos'})."]
+    if ev.get("fim_event_type") not in (None, "no_determinado", "no_aplica"):
+        partes.append(
+            f"Evento FIM: {ev['fim_event_type']} sobre un archivo de categoría "
+            f"'{ev['path_category']}' (extensión: {ev['file_extension']}). "
+            f"Hash disponible: {'sí' if ev['hash_present'] else 'no'}. "
+            f"Tamaño: {ev['size_info']}. Usuario (rol anonimizado): {ev['user_role_category']}. "
+            f"Proceso: {ev['process_category']}. "
+            f"Eventos correlacionados (firedtimes): {ev['correlated_events']}. "
+            f"Telemetría: {ev['telemetry_source']}."
+        )
+    else:
+        partes.append(f"Telemetría: {ev.get('telemetry_source', 'no_determinado')}. "
+                      "Sólo hay descripción, nivel y grupos de la regla; sin datos FIM estructurados.")
+    return " ".join(partes)
+
+_OBS_CVSS_POR_DEFECTO = {k: "no_determinado" for k in CVSS_CLAVES}
+
+# Grupos de Wazuh que permiten inferir el vector de ataque de forma conservadora.
+_GRUPOS_VECTOR_RED = {"web", "ids", "firewall", "attack", "recon", "sshd",
+                      "authentication_failed", "authentication_success", "invalid_login"}
+_GRUPOS_VECTOR_LOCAL = {"syscheck", "syscheck_file", "syscheck_registry", "rootcheck",
+                        "sudo", "adduser", "account_changed", "policy_changed"}
+
+
+def _nivel_int(level):
+    try:
+        return int(float(level))
+    except (TypeError, ValueError):
+        return None
+
+
+def _grupos_lista(groups):
+    if isinstance(groups, (list, tuple)):
+        return [str(g).strip() for g in groups if str(g).strip()]
+    if not groups:
+        return []
+    return [g.strip() for g in str(groups).replace(";", ",").split(",") if g.strip()]
+
+
+def _parsear_ts(ts):
+    if isinstance(ts, datetime.datetime):
+        return ts
+    if not ts:
+        return None
+    s = str(ts).replace("Z", "+00:00")
+    try:
+        return datetime.datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _ventana_operativa(ts, activo):
+    """
+    Cálculo OBJETIVO: compara la hora de la alerta con el horario de operación
+    del activo. Devuelve 'dentro_horario_operativo' | 'fuera_horario_operativo'
+    | 'no_determinado' (si no hay timestamp usable).
+    """
+    dt = _parsear_ts(ts)
+    if dt is None or activo is None:
+        return "no_determinado"
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(activo.zona_horaria or "America/Bogota")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        hora = dt.astimezone(tz).time()
+    except Exception:
+        hora = dt.time()
+    ini, fin = activo.hora_inicio_operacion, activo.hora_fin_operacion
+    dentro = (ini <= hora <= fin) if ini <= fin else (hora >= ini or hora <= fin)
+    return "dentro_horario_operativo" if dentro else "fuera_horario_operativo"
+
+
+def _attack_vector_conservador(grupos):
+    g = set(grupos)
+    if g & _GRUPOS_VECTOR_RED:
+        return "red"
+    if g & _GRUPOS_VECTOR_LOCAL:
+        return "local"
+    return "no_determinado"
+
+
+def construir_entrada_e(alert, activo):
+    """
+    `alert`: dict con 'description'/'descripcion', 'level'/'severidad',
+             'groups', 'rule_id', 'timestamp'.
+    `activo`: instancia de ActivoLogico (obligatoria; sin activo la alerta
+              no llega aquí — la omite la política).
+    Devuelve el dict de la capa E, ya anonimizado. NO incluye datos del activo
+    que puedan identificar (solo tipo/criticidad/SO/contexto/horario).
+    """
+    descripcion = alert.get("description", alert.get("descripcion", "")) or ""
+    nivel = _nivel_int(alert.get("level", alert.get("severidad")))
+    grupos = _grupos_lista(alert.get("groups"))
+
+    obs_cvss = dict(_OBS_CVSS_POR_DEFECTO)
+    obs_cvss["attack_vector"] = _attack_vector_conservador(grupos)
+
+    # Evidencia técnica: SÓLO valores categóricos/anonimizados (lista blanca).
+    evidencia_tecnica = construir_evidencia_tecnica({**alert, "groups": grupos})
+
+    momento = _parsear_ts(alert.get("timestamp"))
+    if momento is not None and momento.tzinfo is None:
+        momento = momento.replace(tzinfo=datetime.timezone.utc)
+    mant_estado, mant_categoria = _estado_ventana_mantenimiento(alert, activo, momento)
+
+    return {
+        "schema_version": "1.0",
+        "alert_description_es": anonimizar_texto(descripcion),
+        "wazuh_level": nivel,
+        "wazuh_rule_groups": grupos,
+        "wazuh_rule_id": (str(alert["rule_id"]) if alert.get("rule_id") not in (None, "") else None),
+        "asset_type": activo.tipo_activo,
+        "asset_criticality": activo.criticidad,
+        "asset_os_family": activo.os_family,
+        "asset_os_role": activo.os_role,
+        "operational_window": _ventana_operativa(alert.get("timestamp"), activo),
+        "maintenance_window": mant_estado,
+        # SÓLO la categoría controlada llega al prompt; descripción/creador/auditoría NO.
+        "maintenance_category": mant_categoria or "no_aplica",
+        "authorized_context_es": activo.contexto_autorizado_es,
+        "technical_evidence_es": _texto_evidencia(nivel, grupos, evidencia_tecnica),
+        "evidencia_tecnica": evidencia_tecnica,
+        "observed_cvss_factors": obs_cvss,
+    }
+
+
+_INSTRUCCIONES = """\
+Eres un analista de seguridad. Analiza la alerta y responde ÚNICAMENTE con un
+objeto JSON válido, sin texto adicional y sin markdown (nada de ```).
+
+El objeto debe tener EXACTAMENTE estas claves:
+  "schema_version": "1.0"
+  "verdict": "FALSO_POSITIVO" | "REQUIERE_ATENCION"
+  "risk": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+  "explanation_es": texto en español, 20 a 600 caracteres
+  "cvss_factors": objeto con EXACTAMENTE estas 8 claves y estos valores:
+     "attack_vector": "red"|"adyacente"|"local"|"fisico"|"no_determinado"
+     "attack_complexity": "baja"|"alta"|"no_determinado"
+     "privileges_required": "ninguno"|"bajos"|"altos"|"no_determinado"
+     "user_interaction": "ninguna"|"requerida"|"no_determinado"
+     "scope": "sin_cambio"|"cambiado"|"no_determinado"
+     "confidentiality_impact": "ninguno"|"bajo"|"alto"|"no_determinado"
+     "integrity_impact": "ninguno"|"bajo"|"alto"|"no_determinado"
+     "availability_impact": "ninguno"|"bajo"|"alto"|"no_determinado"
+  "cvss_reasoning_es": texto en español, 20 a 800 caracteres; indica qué
+     factores quedaron "no_determinado" y por qué
+  "recommendation_es": texto en español, 10 a 500 caracteres; una acción
+     sugerida, nunca ejecutada automáticamente
+  "missing_evidence": lista de 0 a 10 textos (cada uno de 3 a 120 caracteres)
+     con la evidencia que faltó
+
+Reglas:
+- Un riesgo bajo (LOW) NO implica que sea FALSO_POSITIVO.
+- Si falta evidencia, marca los factores como "no_determinado"; no inventes.
+- No añadas ninguna clave extra ni comentarios.
+- "verdict" debe ser EXACTAMENTE "FALSO_POSITIVO" o "REQUIERE_ATENCION"
+  (mayúsculas, sin acentos, sin sinónimos).
+- Ventana de mantenimiento:
+    · "sin_ventana_declarada" = no hay ninguna ventana que cubra este momento
+      (NO asumas que ocurrió "fuera de la ventana").
+    · "indeterminado" = falta el activo o una hora fiable.
+    · "dentro_ventana_declarada" = hay un mantenimiento AUTORIZADO que cubre este
+      momento. Es contexto a favor de una explicación benigna, pero **NO** hace
+      la alerta FALSO_POSITIVO por sí solo: pondera la evidencia técnica (qué se
+      modificó, quién, correlación) y la categoría del mantenimiento.
+"""
+
+
+def construir_prompt(entrada_e):
+    """entrada_e: dict devuelto por construir_entrada_e(). -> str prompt."""
+    grupos = ", ".join(entrada_e["wazuh_rule_groups"]) or "(sin grupos)"
+    ev = entrada_e.get("evidencia_tecnica", {}) or {}
+    return (
+        _INSTRUCCIONES
+        + "\n--- ALERTA ---\n"
+        + f"Descripción (anonimizada): {entrada_e['alert_description_es']}\n"
+        + f"Nivel Wazuh: {entrada_e['wazuh_level']}\n"
+        + f"Grupos de la regla: {grupos}\n"
+        + f"ID de regla: {entrada_e['wazuh_rule_id'] or 'no disponible'}\n"
+        + f"Tipo de activo: {entrada_e['asset_type']}\n"
+        + f"Criticidad del activo: {entrada_e['asset_criticality']}\n"
+        + f"Familia de SO: {entrada_e['asset_os_family']}\n"
+        + f"Rol del activo: {entrada_e['asset_os_role']}\n"
+        + f"Ventana operativa: {entrada_e['operational_window']}\n"
+        + f"Ventana de mantenimiento: {entrada_e['maintenance_window']}\n"
+        + f"Categoría del mantenimiento declarado: {entrada_e.get('maintenance_category', 'no_aplica')}\n"
+        + f"Contexto autorizado: {entrada_e['authorized_context_es']}\n"
+        + f"Evidencia técnica (categórica y anonimizada): {entrada_e['technical_evidence_es']}\n"
+        + f"  · tipo de evento FIM: {ev.get('fim_event_type', 'no_determinado')}\n"
+        + f"  · categoría de ruta: {ev.get('path_category', 'no_determinado')}\n"
+        + f"  · extensión/tipo de archivo: {ev.get('file_extension', 'no_determinado')}\n"
+        + f"  · hash disponible: {ev.get('hash_present', False)}\n"
+        + f"  · tamaño: {ev.get('size_info', 'no_determinado')}\n"
+        + f"  · rol del usuario (anonimizado): {ev.get('user_role_category', 'no_determinado')}\n"
+        + f"  · proceso (anonimizado): {ev.get('process_category', 'no_determinado')}\n"
+        + f"  · eventos correlacionados: {ev.get('correlated_events', 'no_determinado')}\n"
+        + f"  · fuente de telemetría: {ev.get('telemetry_source', 'no_determinado')}\n"
+    )
