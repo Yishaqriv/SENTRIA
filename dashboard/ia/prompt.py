@@ -18,6 +18,7 @@ import datetime
 
 from .anonimizacion import anonimizar_texto
 from .contrato import CVSS_CLAVES
+from .alcance import alcance_en_entrada, coincidencia, operacion_observada
 from .evidencia import construir_evidencia_tecnica
 
 # Estados de ventana de mantenimiento (capa E).
@@ -47,6 +48,21 @@ def _estado_ventana_mantenimiento(alert, activo=None, momento=None):
         return estado_para(activo, momento)
     except Exception:
         return "indeterminado", None
+
+
+def _alcance_mantenimiento(alert, activo, momento, estado):
+    """Alcance declarado de la ventana que cubre el evento (misma ventana y misma hora que `estado`).
+    `alert['maintenance_scope']` explícito (pruebas / override) tiene prioridad."""
+    if estado != "dentro_ventana_declarada":
+        return None
+    v = str(alert.get("maintenance_scope", "") or "").strip()
+    if v:
+        return v
+    try:
+        from dashboard.mantenimiento import alcance_para
+        return alcance_para(activo, momento)
+    except Exception:
+        return None
 
 
 def _texto_evidencia(nivel, grupos, ev):
@@ -223,13 +239,17 @@ def construir_entrada_e(alert, activo):
     # Horario y ventana con la hora del EVENTO (en Windows, la original; nunca la recepción en su lugar).
     momento, _fuente, _recepcion = hora_del_evento(alert)
     mant_estado, mant_categoria = _estado_ventana_mantenimiento(alert, activo, momento)
+    # Entrada 1.3: alcance de la autorización y correspondencia CONSERVADORA con la operación observada.
+    mant_alcance = alcance_en_entrada(mant_estado, _alcance_mantenimiento(alert, activo, momento, mant_estado))
+    mant_coincide = coincidencia(mant_estado, mant_alcance, operacion_observada(evidencia_tecnica, alert.get("rule_id")))
 
     return {
         # Entrada 1.1 (3F.8): añade campos OPCIONALES sca_* / cuenta_* en evidencia_tecnica.
         # Entrada 1.2: añade campos OPCIONALES win_* (solo eventos Windows Application/System) y, en eventos
         # Windows, calcula horario y ventana con la hora original del evento (`hora_del_evento`).
-        # Los snapshots 1.0/1.1 siguen siendo válidos y no se recalculan; la huella ignora la versión.
-        "schema_version": "1.2",
+        # Entrada 1.3: añade `maintenance_scope` y `maintenance_scope_match` (alcance de la autorización).
+        # Los snapshots 1.0/1.1/1.2 siguen siendo válidos y no se recalculan; la huella ignora la versión.
+        "schema_version": "1.3",
         "alert_description_es": anonimizar_texto(descripcion),
         "wazuh_level": nivel,
         "wazuh_rule_groups": grupos,
@@ -242,6 +262,8 @@ def construir_entrada_e(alert, activo):
         "maintenance_window": mant_estado,
         # SÓLO la categoría controlada llega al prompt; descripción/creador/auditoría NO.
         "maintenance_category": mant_categoria or "no_aplica",
+        "maintenance_scope": mant_alcance,
+        "maintenance_scope_match": mant_coincide,
         "authorized_context_es": activo.contexto_autorizado_es,
         "technical_evidence_es": _texto_evidencia(nivel, grupos, evidencia_tecnica),
         "evidencia_tecnica": evidencia_tecnica,
@@ -288,6 +310,12 @@ Reglas:
       momento. Es contexto a favor de una explicación benigna, pero **NO** hace
       la alerta FALSO_POSITIVO por sí solo: pondera la evidencia técnica (qué se
       modificó, quién, correlación) y la categoría del mantenimiento.
+- Alcance de la autorización (tipo de operación autorizada en la ventana):
+    · "coincide" = la operación observada es del tipo autorizado. No prueba ausencia
+      de privilegios ni de riesgo: sigue ponderando la evidencia técnica.
+    · "no_coincide" = la operación observada es de otro tipo: la ventana no la autoriza.
+    · "no_determinado" = no puede compararse (alcance no declarado, no tipificado u
+      operación sin evidencia suficiente). "no_aplica" = no hay ventana.
 """
 
 
@@ -309,6 +337,8 @@ def construir_prompt(entrada_e):
         + f"Ventana operativa: {entrada_e['operational_window']}\n"
         + f"Ventana de mantenimiento: {entrada_e['maintenance_window']}\n"
         + f"Categoría del mantenimiento declarado: {entrada_e.get('maintenance_category', 'no_aplica')}\n"
+        + f"Alcance autorizado del mantenimiento: {entrada_e.get('maintenance_scope', 'no_determinado')}\n"
+        + f"Coincidencia de la operación con el alcance: {entrada_e.get('maintenance_scope_match', 'no_determinado')}\n"
         + f"Contexto autorizado: {entrada_e['authorized_context_es']}\n"
         + f"Evidencia técnica (categórica y anonimizada): {entrada_e['technical_evidence_es']}\n"
         + f"  · tipo de evento FIM: {ev.get('fim_event_type', 'no_determinado')}\n"

@@ -21,6 +21,7 @@ from .models import (
 from .ia.ingesta import ingestar_lote, reanalizar_alerta
 from .ia.persistencia import registrar_correccion_humana
 from .ia.proveedores import nombre_proveedor_activo
+from .ia.alcance import ALCANCES, ALCANCES_VALIDOS
 from .mantenimiento import crear_ventana, cancelar_ventana
 from .revision import registrar_revision, MOTIVOS as MOTIVOS_REVISION, RIESGOS as RIESGOS_REVISION
 from . import dataset as ds
@@ -621,10 +622,15 @@ def mantenimiento_lista(request):
         activo = ActivoLogico.objects.filter(id=(request.POST.get('activo_logico') or 0)).first()
         inicio = _parse_dt_local(request.POST.get('inicio'), activo)
         fin = _parse_dt_local(request.POST.get('fin'), activo)
+        alcance = request.POST.get('alcance_operacion', '')
+        if alcance not in ALCANCES_VALIDOS:          # el formulario exige un alcance cerrado (nunca `no_declarado`)
+            messages.error(request, "Elige el alcance de la operación autorizada.")
+            return redirect('mantenimiento_lista')
         try:
             v = crear_ventana(
                 activo=activo, inicio=inicio, fin=fin,
                 categoria=request.POST.get('categoria', ''),
+                alcance_operacion=alcance,
                 descripcion=request.POST.get('descripcion', ''),
                 autor=request.user,
             )
@@ -638,6 +644,7 @@ def mantenimiento_lista(request):
         'ventanas': ventanas,
         'activos': ActivoLogico.objects.filter(activo=True),
         'categorias': VentanaMantenimiento.CATEGORIA_CHOICES,
+        'alcances': ALCANCES,
         'puede_gestionar': puede_gestionar,
         'ahora': timezone.now(),
     })

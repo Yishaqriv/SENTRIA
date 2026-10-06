@@ -1,5 +1,7 @@
 from django.db import models
 
+from dashboard.ia.alcance import ALCANCE_CHOICES, NO_DECLARADO
+
 
 class ActivoLogico(models.Model):
     """
@@ -163,6 +165,8 @@ class VentanaMantenimiento(models.Model):
     inicio = models.DateTimeField()
     fin = models.DateTimeField()
     categoria = models.CharField(max_length=30, choices=CATEGORIA_CHOICES)
+    # Entrada 1.3: tipo de operación autorizada (categoría cerrada). Las ventanas anteriores quedan `no_declarado`.
+    alcance_operacion = models.CharField(max_length=40, choices=ALCANCE_CHOICES, default=NO_DECLARADO)
     descripcion = models.CharField(max_length=280, blank=True, default="")
     creada_por = models.ForeignKey(
         "auth.User", null=True, blank=True, on_delete=models.SET_NULL,

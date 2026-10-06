@@ -39,7 +39,8 @@ _CLAVES_ENTRADA = (
     "schema_version", "alert_description_es", "wazuh_level", "wazuh_rule_groups",
     "wazuh_rule_id", "asset_type", "asset_criticality", "asset_os_family",
     "asset_os_role", "operational_window", "maintenance_window",
-    "maintenance_category", "authorized_context_es", "technical_evidence_es",
+    "maintenance_category", "maintenance_scope", "maintenance_scope_match",       # 1.3 (opcionales)
+    "authorized_context_es", "technical_evidence_es",
     "evidencia_tecnica", "observed_cvss_factors",
 )
 

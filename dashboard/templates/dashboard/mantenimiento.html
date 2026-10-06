@@ -70,6 +70,13 @@
                     </select>
                 </div>
                 <div class="fg">
+                    <label>Alcance de la operación autorizada</label>
+                    <select name="alcance_operacion" required>
+                        <option value="">— elige —</option>
+                        {% for val, txt in alcances %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="fg">
                     <label>Inicio (hora local del activo)</label>
                     <input type="datetime-local" name="inicio" required>
                 </div>
@@ -85,6 +92,8 @@
             <button type="submit" class="btn-ok">Crear ventana</button>
             <div class="nota">
                 El fin debe ser posterior al inicio. No se permiten solapamientos de ventanas activas sobre el mismo activo.
+                Declárala <b>antes</b> de la operación: una ventana registrada después no autoriza eventos anteriores.
+                Al modelo solo llegan la categoría y el alcance (nunca la descripción).
                 Estar dentro de una ventana <b>no</b> convierte una alerta en falso positivo automáticamente.
             </div>
         </form>
@@ -98,7 +107,7 @@
         <table>
             <thead>
                 <tr>
-                    <th>Activo</th><th>Categoría</th>
+                    <th>Activo</th><th>Categoría</th><th>Alcance</th>
                     <th>Inicio (hora local del activo)</th><th>Fin (hora local del activo)</th><th>Estado</th>
                     <th>Creada por</th>{% if puede_gestionar %}<th></th>{% endif %}
                 </tr>
@@ -109,6 +118,7 @@
                     <td>{{ v.activo_logico.identificador }}<br>
                         <span style="font-size:11px; color:#5a789a;">{{ v.activo_logico.zona_horaria }}</span></td>
                     <td>{{ v.get_categoria_display }}</td>
+                    <td>{{ v.get_alcance_operacion_display }}</td>
                     <td>{{ v.inicio|en_zona:v.activo_logico.zona_horaria }}</td>
                     <td>{{ v.fin|en_zona:v.activo_logico.zona_horaria }}</td>
                     <td>
@@ -133,7 +143,7 @@
                     {% endif %}
                 </tr>
                 {% empty %}
-                <tr><td colspan="7"><div class="empty">No hay ventanas de mantenimiento registradas.</div></td></tr>
+                <tr><td colspan="8"><div class="empty">No hay ventanas de mantenimiento registradas.</div></td></tr>
                 {% endfor %}
             </tbody>
         </table>

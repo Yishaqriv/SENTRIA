@@ -13,6 +13,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from dashboard.ia.alcance import ALCANCES_VALIDOS, NO_DECLARADO
 from dashboard.models import VentanaMantenimiento
 
 _CATEGORIAS = dict(VentanaMantenimiento.CATEGORIA_CHOICES)
@@ -27,8 +28,9 @@ def _hay_solape_activo(activo, inicio, fin, excluir_id=None):
     return qs.exists()
 
 
-def crear_ventana(*, activo, inicio, fin, categoria, descripcion="", autor=None):
-    """Crea una ventana ACTIVA. Valida fin>inicio, categoría y no-solapamiento."""
+def crear_ventana(*, activo, inicio, fin, categoria, descripcion="", autor=None, alcance_operacion=NO_DECLARADO):
+    """Crea una ventana ACTIVA. Valida fin>inicio, categoría, alcance y no-solapamiento.
+    `alcance_operacion`: categoría cerrada; `no_declarado` solo para llamadas internas antiguas (el formulario exige uno)."""
     if activo is None:
         raise ValidationError("Activo lógico obligatorio.")
     if inicio is None or fin is None:
@@ -37,13 +39,15 @@ def crear_ventana(*, activo, inicio, fin, categoria, descripcion="", autor=None)
         raise ValidationError("La fecha/hora de fin debe ser posterior a la de inicio.")
     if categoria not in _CATEGORIAS:
         raise ValidationError("Categoría de mantenimiento no válida.")
+    if alcance_operacion not in ALCANCES_VALIDOS + (NO_DECLARADO,):
+        raise ValidationError("Alcance de la operación no válido.")
     with transaction.atomic():
         if _hay_solape_activo(activo, inicio, fin):
             raise ValidationError(
                 f"Ya existe una ventana ACTIVA que se solapa para {activo.identificador}."
             )
         return VentanaMantenimiento.objects.create(
-            activo_logico=activo, inicio=inicio, fin=fin, categoria=categoria,
+            activo_logico=activo, inicio=inicio, fin=fin, categoria=categoria, alcance_operacion=alcance_operacion,
             descripcion=(descripcion or "").strip()[:280],
             creada_por=autor if getattr(autor, "pk", None) else None,
         )
@@ -73,11 +77,23 @@ def estado_para(activo, momento):
     """
     if activo is None or getattr(activo, "pk", None) is None or momento is None:
         return "indeterminado", None
-    v = (_cubren(activo, momento).filter(creada_en__lte=momento)
-         .order_by("inicio").first())
+    v = ventana_aplicable(activo, momento)
     if v is None:
         return "sin_ventana_declarada", None
     return "dentro_ventana_declarada", v.categoria
+
+
+def ventana_aplicable(activo, momento):
+    """La ventana ACTIVA, registrada antes del evento, que cubre `momento` (la misma que usa `estado_para`)."""
+    if activo is None or getattr(activo, "pk", None) is None or momento is None:
+        return None
+    return _cubren(activo, momento).filter(creada_en__lte=momento).order_by("inicio").first()
+
+
+def alcance_para(activo, momento):
+    """Alcance declarado de la ventana aplicable (`no_declarado` en las anteriores a la 1.3) o None."""
+    v = ventana_aplicable(activo, momento)
+    return v.alcance_operacion if v is not None else None
 
 
 def _cubren(activo, momento):
