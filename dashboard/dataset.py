@@ -183,8 +183,30 @@ def validar_privacidad(*objetos):
     return (not hallazgos), hallazgos
 
 
+def _aparece_identificador(blob, valor):
+    """
+    ¿Aparece `valor` como identificador independiente en `blob`?
+
+    No basta con una subcadena: el agente "000" no debe confundirse con la
+    táctica MITRE "TA0005" ni con el número "1000". Cuenta una aparición
+    delimitada por caracteres no alfanuméricos (comillas JSON, espacios, "=",
+    ":", "."…), p. ej. `"000"`, `agent.id=000` o `agente 000`. Si el valor es
+    numérico, se ignora cuando forma parte de un número mayor ("10.000").
+    """
+    v = str(valor).strip()
+    if not v:
+        return False
+    for m in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(v)}(?![A-Za-z0-9])", blob, re.IGNORECASE):
+        if v.isdigit():
+            antes, despues = blob[max(0, m.start() - 2):m.start()], blob[m.end():m.end() + 2]
+            if re.fullmatch(r"\d[.,]", antes) or re.fullmatch(r"[.,]\d", despues):
+                continue
+        return True
+    return False
+
+
 def _fuga_de_identificadores(alerta, *objetos):
-    """Comprueba que no aparezcan valores concretos de esta alerta."""
+    """Comprueba que no aparezcan valores concretos de esta alerta (como identificador independiente)."""
     blob = "\n".join(_canonical(o) for o in objetos if o is not None)
     fugas = []
     for etiqueta, valor in (
@@ -192,7 +214,7 @@ def _fuga_de_identificadores(alerta, *objetos):
         ("opensearch_id", alerta.opensearch_id),
         ("identificador_activo", getattr(alerta.activo_logico, "identificador", None)),
     ):
-        if valor and str(valor) in blob:
+        if valor and _aparece_identificador(blob, valor):
             fugas.append(etiqueta)
     return fugas
 

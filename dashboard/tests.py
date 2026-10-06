@@ -2423,6 +2423,71 @@ class BandejaDatasetTests(TestCase):
         self.assertEqual(sincronizar_todos(), 1)
 
 
+class FugaIdentificadoresTests(TestCase):
+    """Regresión 3F.10: el agente "000" no debe confundirse con tácticas MITRE (TA0005…) ni con
+    números mayores, pero sí debe detectarse cuando aparece como identificador independiente."""
+
+    def _alerta(self, agente="000", osid="wdBchKAB3fBU6jWnXuGy", activo="SRV-01"):
+        return SimpleNamespace(wazuh_agent_id=agente, opensearch_id=osid,
+                               activo_logico=SimpleNamespace(identificador=activo) if activo else None)
+
+    def _fugas(self, *objetos, **kw):
+        from dashboard.dataset import _fuga_de_identificadores
+        return _fuga_de_identificadores(self._alerta(**kw), *objetos)
+
+    def test_tacticas_mitre_no_son_el_agente(self):
+        for tacticas in (["TA0005"], ["TA0001"], ["TA0006", "TA0009"], ["TA0040"], ["T1078", "T1098.001"]):
+            entrada = {"evidencia_tecnica": {"sca_tacticas_mitre": tacticas}}
+            self.assertEqual(self._fugas(entrada), [], tacticas)
+            self.assertEqual(self._fugas(entrada, agente="001"), [], tacticas)
+        self.assertEqual(self._fugas({"t": "Táctica TA0011 asociada"}, agente="001"), [])
+
+    def test_numeros_mayores_no_son_el_agente(self):
+        for texto in ("Se perdieron 1000 eventos", "Unos 10.000 eventos", "Límite de 2,000 MB", "ID 35000"):
+            self.assertEqual(self._fugas({"t": texto}), [], texto)
+
+    def test_agente_expuesto_se_detecta(self):
+        casos = ({"t": "agent.id=000"}, {"t": "agent_id: 000"}, {"t": "el agente 000 envió"},
+                 {"agent": "000"}, {"t": "(000)"}, {"t": "Agente 000."}, {"t": "agent.id=001"})
+        for obj in casos:
+            agente = "001" if "001" in json.dumps(obj) else "000"
+            self.assertIn("agent_id", self._fugas(obj, agente=agente), obj)
+
+    def test_opensearch_id_e_identificador_activo_se_detectan(self):
+        self.assertIn("opensearch_id", self._fugas({"t": "documento wdBchKAB3fBU6jWnXuGy"}))
+        self.assertIn("opensearch_id", self._fugas({"t": "documento WDBCHKAB3FBU6JWNXUGY"}))
+        self.assertIn("identificador_activo", self._fugas({"t": "Servidor SRV-01 del laboratorio"}))
+        self.assertIn("identificador_activo", self._fugas({"t": "equipo srv-01"}))
+        self.assertIn("identificador_activo", self._fugas({"activo": "SRV-01"}))
+
+    def test_identificador_activo_dentro_de_otro_no_cuenta(self):
+        self.assertEqual(self._fugas({"t": "equipo SRV-012 y XSRV-01"}), [])
+
+    def test_valores_vacios_no_fugan(self):
+        self.assertEqual(self._fugas({"t": "agente 000"}, agente="", osid=None, activo=None), [])
+
+    def test_candidato_sca_con_mitre_no_queda_bloqueado(self):
+        u = User.objects.create_user("fug1", password="p")
+        snap = dict(_SNAP_SEGURO)
+        snap["evidencia_tecnica"] = {**_SNAP_SEGURO["evidencia_tecnica"], "sca_tacticas_mitre": ["TA0005"]}
+        a = _alerta_completed(contexto_ia_snapshot=snap, wazuh_agent_id="000",
+                              activo_logico=_activo_real(), opensearch_id="wdBchKAB3fBU6jWnXuGy")
+        registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=u)
+        a.refresh_from_db()
+        self.assertTrue(a.candidato_dataset.privacidad_ok)
+        self.assertEqual(a.candidato_dataset.diagnostico["fugas_identificador"], [])
+
+    def test_candidato_con_agente_expuesto_sigue_bloqueado(self):
+        u = User.objects.create_user("fug2", password="p")
+        snap = dict(_SNAP_SEGURO)
+        snap["technical_evidence_es"] = "Evento recibido de agent.id=000 sin más contexto."
+        a = _alerta_completed(contexto_ia_snapshot=snap, wazuh_agent_id="000")
+        registrar_revision(a, accion="CONFIRMADA", motivo_categoria="otro", autor=u)
+        a.refresh_from_db()
+        self.assertFalse(a.candidato_dataset.privacidad_ok)
+        self.assertIn("agent_id", a.candidato_dataset.diagnostico["fugas_identificador"])
+
+
 class ID128ComoPrimerCandidatoTests(TestCase):
     """Reproduce el escenario real de la alerta 128: IA=REQUIERE_ATENCION,
     verdad de terreno humana=FALSO_POSITIVO (evento controlado en ventana)."""
