@@ -4378,8 +4378,9 @@ class EvidenciaCuentasTests(SimpleTestCase):
         self.assertEqual((evg["cuenta_operacion"], evg["cuenta_tipo"]), ("crear_grupo", "grupo_usuario"))
 
     def test_windows_4738_cambio_de_nombre_visible_por_sistema(self):
+        # Formato histórico observado (70 eventos): solo displayName informado; lo no cambiado llega como "-"/omitido.
         raw = _win("4738", {"targetUserName": "persona_real", "targetSid": f"{_SID_PC}-1001", "subjectUserName": "PC$",
-                            "subjectUserSid": "S-1-5-18", "displayName": "Nombre Real", "samAccountName": "%%1793", "userAccountControl": "-"})
+                            "subjectUserSid": "S-1-5-18", "displayName": "Nombre Real", "userAccountControl": "-"})
         ev = evi.construir_evidencia_tecnica(raw)
         self.assertEqual((ev["cuenta_operacion"], ev["cuenta_actor"], ev["cuenta_tipo"], ev["cuenta_atributos_cambiados"], ev["cuenta_cambio_privilegios"]),
                          ("modificar_usuario", "cuenta_servicio_sistema", "usuario", ["nombre_visible"], "no_indicado"))
@@ -4398,8 +4399,12 @@ class EvidenciaCuentasTests(SimpleTestCase):
         ev = evi.construir_evidencia_tecnica(_win("4720", {"targetUserName": "x", "targetSid": f"{_SID_PC}-1003", "subjectUserSid": f"{_SID_PC}-1001"}, rule_id="60109"))
         self.assertEqual((ev["cuenta_operacion"], ev["cuenta_actor"]), ("crear_usuario", "usuario"))
         ev2 = evi.construir_evidencia_tecnica(_win("4738", {"targetSid": f"{_SID_PC}-1003", "subjectUserSid": f"{_SID_PC}-1001",
-                                                            "userAccountControl": "%%2080"}))
+                                                            "oldUacValue": "0x15", "newUacValue": "0x10", "userAccountControl": "%%2048"}))
         self.assertEqual(ev2["cuenta_cambio_privilegios"], "control_cuenta_modificado")
+        # Solo el texto de UAC, sin valores anterior/nuevo: no se infiere cambio (3F.10, extractor conservador).
+        ev2b = evi.construir_evidencia_tecnica(_win("4738", {"targetSid": f"{_SID_PC}-1003", "subjectUserSid": f"{_SID_PC}-1001",
+                                                             "userAccountControl": "%%2080"}))
+        self.assertEqual(ev2b["cuenta_cambio_privilegios"], "no_indicado")
         ev3 = evi.construir_evidencia_tecnica(_win("4738", {"targetUserName": "EQUIPO$", "targetSid": f"{_SID_PC}-1100"}))
         self.assertEqual(ev3["cuenta_tipo"], "cuenta_equipo")
 
@@ -4407,6 +4412,79 @@ class EvidenciaCuentasTests(SimpleTestCase):
         raw = _sb._normalizar_hit(_hit("60602", 9, ["windows", "windows_application"], "Windows application error event.",
                                        {"win": {"system": {"eventID": "11730", "channel": "Application"}, "eventdata": {"data": "x"}}}))
         self.assertFalse([k for k in evi.construir_evidencia_tecnica(raw) if k.startswith(("cuenta_", "sca_"))])
+
+
+def _sam_completo(**extra):
+    """Fixture saneado del formato observado en cuentas locales (SAM): todos los atributos con su valor actual."""
+    base = {"targetUserName": "cuenta_x", "targetDomainName": "PC-PRIVADO", "targetSid": f"{_SID_PC}-1010",
+            "subjectUserName": "admin_x", "subjectDomainName": "PC-PRIVADO", "subjectUserSid": f"{_SID_PC}-1001",
+            "subjectLogonId": "0x1", "samAccountName": "cuenta_x", "displayName": "%%1793", "homeDirectory": "%%1793",
+            "homePath": "%%1793", "scriptPath": "%%1793", "profilePath": "%%1793", "userWorkstations": "%%1793",
+            "passwordLastSet": "%%1794", "accountExpires": "%%1794", "primaryGroupId": "513", "userParameters": "%%1793",
+            "logonHours": "%%1797", "oldUacValue": "0x15", "newUacValue": "0x15"}
+    base.update(extra)
+    return base
+
+
+class ExtractorCuentasWindowsTests(SimpleTestCase):
+    """3F.10: atributo informado ≠ cambio demostrado ≠ no determinado (documentación de Microsoft de 4720/4738)."""
+
+    def _ev(self, eid, ed, rule_id="60110"):
+        return evi.construir_evidencia_tecnica(_win(eid, ed, rule_id=rule_id))
+
+    def test_valores_completos_no_se_presentan_como_cambios(self):
+        ev = self._ev("4738", _sam_completo())
+        self.assertEqual(ev["cuenta_atributos_cambiados"], "no_determinado")
+        self.assertEqual(ev["cuenta_cambio_privilegios"], "no_indicado")      # UAC igual: sin cambio de control
+        self.assertEqual(ev["cuenta_estado"], "deshabilitada")               # 0x15 -> bit 0x1 activo
+
+    def test_valores_completos_con_nombre_visible_no_demuestran_su_cambio(self):
+        ev = self._ev("4738", _sam_completo(displayName="Nombre Real", passwordLastSet="06/10/2026 10:17:12"))
+        self.assertEqual(ev["cuenta_atributos_cambiados"], "no_determinado")
+
+    def test_uac_distinta_igual_y_ausente(self):
+        self.assertEqual(self._ev("4738", _sam_completo(newUacValue="0x14"))["cuenta_cambio_privilegios"], "control_cuenta_modificado")
+        self.assertEqual(self._ev("4738", _sam_completo(newUacValue="0x14"))["cuenta_estado"], "habilitada")
+        sin_ant = _sam_completo(); sin_ant.pop("oldUacValue")
+        self.assertEqual(self._ev("4738", sin_ant)["cuenta_cambio_privilegios"], "no_indicado")
+        for invalido in ("-", "", "%%1793", "21"):
+            ed = _sam_completo(oldUacValue=invalido, newUacValue="0x10")
+            self.assertEqual(self._ev("4738", ed)["cuenta_cambio_privilegios"], "no_indicado", invalido)
+        sin_nue = _sam_completo(); sin_nue.pop("newUacValue")
+        self.assertNotIn("cuenta_estado", self._ev("4738", sin_nue))
+
+    def test_formato_delta_cambios_demostrados(self):
+        ev = self._ev("4738", {"targetSid": f"{_SID_PC}-1010", "subjectUserSid": f"{_SID_PC}-1001",
+                               "displayName": "Nombre Nuevo", "allowedToDelegateTo": "%%1793",
+                               "oldUacValue": "0x15", "newUacValue": "0x211"})
+        # en «delta», "<value not set>" (%%1793) también es un cambio demostrado (atributo vaciado)
+        self.assertEqual(ev["cuenta_atributos_cambiados"], ["control_cuenta", "delegacion", "nombre_visible"])
+        self.assertEqual(ev["cuenta_cambio_privilegios"], "control_cuenta_modificado")
+
+    def test_4738_sin_atributos_es_no_determinado(self):
+        ev = self._ev("4738", {"targetSid": f"{_SID_PC}-1010", "subjectUserSid": f"{_SID_PC}-1001"})
+        self.assertEqual((ev["cuenta_atributos_cambiados"], ev["cuenta_cambio_privilegios"]), ("no_determinado", "no_indicado"))
+        self.assertNotIn("cuenta_estado", ev)
+
+    def test_4720_estado_deshabilitada_sin_inferir_cambio_de_control(self):
+        ev = self._ev("4720", _sam_completo(oldUacValue="0x0", newUacValue="0x15", userAccountControl="%%2080 %%2082 %%2084"), rule_id="60109")
+        self.assertEqual((ev["cuenta_operacion"], ev["cuenta_estado"], ev["cuenta_cambio_privilegios"]),
+                         ("crear_usuario", "deshabilitada", "no_indicado"))
+        self.assertNotIn("cuenta_atributos_cambiados", ev)
+
+    def test_4726_sin_uac_no_anade_estado(self):
+        ev = self._ev("4726", {"targetSid": f"{_SID_PC}-1010", "subjectUserSid": f"{_SID_PC}-1001"}, rule_id="60111")
+        self.assertEqual((ev["cuenta_operacion"], ev["cuenta_cambio_privilegios"]), ("eliminar_usuario", "no_indicado"))
+        self.assertNotIn("cuenta_estado", ev)
+
+    def test_privacidad_sin_nombres_sid_ni_valores(self):
+        raw = _win("4738", _sam_completo(displayName="Nombre Real", passwordLastSet="06/10/2026 10:17:12"))
+        ent = _cee(raw, _ACT_SRV)
+        blob = json.dumps(ent, ensure_ascii=False) + _cp(ent)
+        for prohibido in ("cuenta_x", "admin_x", "Nombre Real", "PC-PRIVADO", "S-1-5-21", "%%17", "0x15", "10:17:12"):
+            self.assertNotIn(prohibido, blob, prohibido)
+        self.assertIn("estado de la cuenta: deshabilitada", _cp(ent))
+        self.assertTrue(validar_privacidad(_dsm.construir_entrada(SimpleNamespace(contexto_ia_snapshot=ent)))[0])
 
 
 class EntradaCompatibilidadTests(SimpleTestCase):

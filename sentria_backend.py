@@ -106,11 +106,17 @@ _SOURCE_FIELDS = [
     "data.win.system.eventID", "data.win.system.channel", "data.win.eventdata",
 ]
 
-# Claves de 4738 que son identidad (no "atributos cambiados"); el resto se resume por NOMBRE de campo.
-_WIN_CLAVES_IDENTIDAD = {"targetUserName", "targetDomainName", "targetSid", "subjectUserName",
-                         "subjectDomainName", "subjectUserSid", "subjectLogonId", "privilegeList",
-                         "memberName", "memberSid", "dummy"}
-_WIN_SIN_CAMBIO = {"%%1793", "-", ""}
+# Atributos de cuenta que informan los eventos 4720/4738 (documentación de Microsoft de ambos eventos).
+# En el formato «delta» un atributo no cambiado vale "-" (Wazuh lo omite); en cuentas locales (SAM) el 4738
+# trae el valor ACTUAL de todos los atributos, y Microsoft advierte que entonces no puede saberse cuál cambió.
+_WIN_ATRIBUTOS_CUENTA = ("samAccountName", "displayName", "userPrincipalName", "homeDirectory", "homePath",
+                         "scriptPath", "profilePath", "userWorkstations", "passwordLastSet", "accountExpires",
+                         "primaryGroupId", "allowedToDelegateTo", "userParameters", "sidHistory", "logonHours")
+
+
+def _win_formato_atributos(informados):
+    """'valores_completos' (cuenta local: samAccountName siempre informado junto a otros) o 'delta'."""
+    return "valores_completos" if ("samAccountName" in informados and len(informados) >= 3) else "delta"
 
 
 def _sca_crudo(data):
@@ -125,19 +131,22 @@ def _sca_crudo(data):
 
 
 def _win_crudo(data):
-    """Capa P: SIDs y nombres de CAMPO cambiados. El nombre de usuario NO se propaga
-    (solo si termina en `$`, es decir, cuenta de equipo)."""
+    """Capa P: SIDs, NOMBRES de los atributos informados, formato del evento y valores UAC (hex).
+    El nombre de usuario NO se propaga (solo si termina en `$`, es decir, cuenta de equipo); de los
+    atributos solo se usa si están informados, nunca su valor."""
     win = (data or {}).get("win") or {}
     sysw = win.get("system") or {}
     if not sysw.get("eventID"):
         return None
     ed = win.get("eventdata") or {}
+    informados = sorted(k for k in _WIN_ATRIBUTOS_CUENTA if str(ed.get(k, "")).strip() not in ("", "-"))
     return {"event_id": str(sysw.get("eventID")), "channel": sysw.get("channel"),
             "target_sid": ed.get("targetSid"), "subject_sid": ed.get("subjectUserSid"),
             "member_sid": ed.get("memberSid"),
             "target_es_equipo": str(ed.get("targetUserName") or "").endswith("$"),
-            "atributos": sorted(k for k, v in ed.items()
-                                if k not in _WIN_CLAVES_IDENTIDAD and str(v).strip() not in _WIN_SIN_CAMBIO)}
+            "atributos_informados": informados,
+            "formato_atributos": _win_formato_atributos(informados),
+            "uac_anterior": ed.get("oldUacValue"), "uac_nuevo": ed.get("newUacValue")}
 
 
 def _normalizar_hit(hit):

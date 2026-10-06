@@ -266,7 +266,7 @@ _ETIQUETAS_EXTRA = {
     "cuenta_tipo": "tipo de cuenta", "cuenta_actor": "tipo de actor que hizo el cambio",
     "cuenta_inicio_sesion_interactivo": "permite inicio de sesión interactivo",
     "cuenta_atributos_cambiados": "atributos cambiados", "cuenta_grupo": "grupo afectado",
-    "cuenta_cambio_privilegios": "cambio de privilegios",
+    "cuenta_cambio_privilegios": "cambio de privilegios", "cuenta_estado": "estado de la cuenta",
 }
 
 

@@ -18,7 +18,8 @@ ENTRADA 1.1 (3F.8) — campos OPCIONALES, solo presentes cuando la telemetría l
   SCA:     sca_resultado, sca_resultado_anterior, sca_id_comprobacion, sca_control_cis,
            sca_categoria_control, sca_benchmark, sca_tacticas_mitre
   Cuentas: cuenta_operacion, cuenta_tipo, cuenta_actor, cuenta_inicio_sesion_interactivo,
-           cuenta_atributos_cambiados, cuenta_grupo, cuenta_cambio_privilegios
+           cuenta_atributos_cambiados (lista o "no_determinado"), cuenta_grupo, cuenta_cambio_privilegios,
+           cuenta_estado (deshabilitada/habilitada, solo con UAC nuevo válido)
 Todos son categorías cerradas o identificadores técnicos validados por patrón; nunca
 nombres de usuario/equipo, SIDs, rutas, comandos ni texto libre de la telemetría.
 
@@ -303,9 +304,11 @@ _ATRIBUTOS_WIN = {
     "homeDirectory": "directorio_personal", "homePath": "directorio_personal", "scriptPath": "script_inicio",
     "profilePath": "perfil", "userWorkstations": "estaciones_permitidas", "passwordLastSet": "contrasena",
     "accountExpires": "expiracion", "primaryGroupId": "grupo_principal", "allowedToDelegateTo": "delegacion",
-    "oldUacValue": "control_cuenta", "newUacValue": "control_cuenta", "userAccountControl": "control_cuenta",
     "userParameters": "parametros", "sidHistory": "historial_sid", "logonHours": "horas_inicio_sesion",
 }
+# [MS-SAMR] USER_ACCOUNT codes: USER_ACCOUNT_DISABLED = 0x00000001 (Old/New UAC Value de 4720/4738).
+_UAC_CUENTA_DESHABILITADA = 0x1
+_RE_HEX = re.compile(r"^0x[0-9a-fA-F]+$")
 _RE_SID_DOMINIO = re.compile(r"^S-1-5-21-\d+-\d+-\d+-(\d+)$")
 
 
@@ -334,6 +337,33 @@ def _num(x):
         return int(str(x).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _uac(valor):
+    """Valor UAC hexadecimal válido ("0x15") -> int; cualquier otra cosa (ausente, "-", texto) -> None."""
+    s = str(valor or "").strip()
+    return int(s, 16) if _RE_HEX.match(s) else None
+
+
+def _evidencia_cambio_usuario_win(win):
+    """
+    4738 (y compatibles): distingue cambio demostrado, atributo solo informado y dato no determinado.
+    - Formato «delta» (lo no cambiado vale "-" y Wazuh lo omite): cada atributo informado es un cambio demostrado.
+    - Formato de «valores completos» (cuentas locales): Microsoft documenta que no puede saberse qué
+      atributo cambió -> `no_determinado`, nunca el valor completo como prueba de modificación.
+    - Un 4738 sin atributos informados ni cambio UAC: cambió algo no listado (p. ej. la descripción) -> `no_determinado`.
+    - control de cuenta: solo si los UAC anterior y nuevo son válidos y distintos; si falta alguno no se infiere nada.
+    """
+    ant, nue = _uac(win.get("uac_anterior")), _uac(win.get("uac_nuevo"))
+    uac_cambio = ant is not None and nue is not None and ant != nue
+    if win.get("formato_atributos") == "valores_completos":
+        attrs = "no_determinado"
+    else:
+        cambiados = {_ATRIBUTOS_WIN[k] for k in (win.get("atributos_informados") or []) if k in _ATRIBUTOS_WIN}
+        if uac_cambio:
+            cambiados.add("control_cuenta")
+        attrs = sorted(cambiados) or "no_determinado"
+    return attrs, ("control_cuenta_modificado" if uac_cambio else "no_indicado")
 
 
 def evidencia_cuenta(alert):
@@ -371,10 +401,13 @@ def evidencia_cuenta(alert):
                                                else "sin_cambio_privilegiado" if grupo != "no_determinado" else "no_indicado")
         else:
             ev["cuenta_tipo"] = _tipo_sid(win.get("target_sid"), bool(win.get("target_es_equipo")))
-            attrs = sorted({_ATRIBUTOS_WIN[k] for k in (win.get("atributos") or []) if k in _ATRIBUTOS_WIN})
+            nue = _uac(win.get("uac_nuevo"))
+            if nue is not None and op in ("crear_usuario", "modificar_usuario"):
+                ev["cuenta_estado"] = "deshabilitada" if nue & _UAC_CUENTA_DESHABILITADA else "habilitada"
             if op == "modificar_usuario":
-                ev["cuenta_atributos_cambiados"] = attrs
-            ev["cuenta_cambio_privilegios"] = "control_cuenta_modificado" if "control_cuenta" in attrs else "no_indicado"
+                ev["cuenta_atributos_cambiados"], ev["cuenta_cambio_privilegios"] = _evidencia_cambio_usuario_win(win)
+            else:
+                ev["cuenta_cambio_privilegios"] = "no_indicado"
         return ev
     return {}
 
