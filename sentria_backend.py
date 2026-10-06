@@ -98,7 +98,46 @@ _SOURCE_FIELDS = [
     "syscheck.sha1_after", "syscheck.sha256_after", "syscheck.md5_after",
     "syscheck.uid_after", "syscheck.gid_after", "syscheck.uname_after", "syscheck.gname_after",
     "syscheck.perm_after", "syscheck.audit.process.name",
+    # Entrada 1.1 (3F.8): SCA y cuentas. Capa P/cruda: evidencia.py solo emite categorías.
+    "data.sca.type", "data.sca.policy", "data.sca.check.id", "data.sca.check.result",
+    "data.sca.check.previous_result", "data.sca.check.compliance.cis",
+    "data.sca.check.compliance.mitre_tactics",
+    "data.uid", "data.gid", "data.shell",
+    "data.win.system.eventID", "data.win.system.channel", "data.win.eventdata",
 ]
+
+# Claves de 4738 que son identidad (no "atributos cambiados"); el resto se resume por NOMBRE de campo.
+_WIN_CLAVES_IDENTIDAD = {"targetUserName", "targetDomainName", "targetSid", "subjectUserName",
+                         "subjectDomainName", "subjectUserSid", "subjectLogonId", "privilegeList",
+                         "memberName", "memberSid", "dummy"}
+_WIN_SIN_CAMBIO = {"%%1793", "-", ""}
+
+
+def _sca_crudo(data):
+    sca = (data or {}).get("sca") or {}
+    if sca.get("type") != "check":
+        return None
+    chk = sca.get("check") or {}
+    comp = chk.get("compliance") or {}
+    return {"policy": sca.get("policy"), "id": chk.get("id"), "result": chk.get("result"),
+            "previous_result": chk.get("previous_result"), "cis": comp.get("cis"),
+            "mitre_tactics": comp.get("mitre_tactics")}
+
+
+def _win_crudo(data):
+    """Capa P: SIDs y nombres de CAMPO cambiados. El nombre de usuario NO se propaga
+    (solo si termina en `$`, es decir, cuenta de equipo)."""
+    win = (data or {}).get("win") or {}
+    sysw = win.get("system") or {}
+    if not sysw.get("eventID"):
+        return None
+    ed = win.get("eventdata") or {}
+    return {"event_id": str(sysw.get("eventID")), "channel": sysw.get("channel"),
+            "target_sid": ed.get("targetSid"), "subject_sid": ed.get("subjectUserSid"),
+            "member_sid": ed.get("memberSid"),
+            "target_es_equipo": str(ed.get("targetUserName") or "").endswith("$"),
+            "atributos": sorted(k for k, v in ed.items()
+                                if k not in _WIN_CLAVES_IDENTIDAD and str(v).strip() not in _WIN_SIN_CAMBIO)}
 
 
 def _normalizar_hit(hit):
@@ -130,6 +169,12 @@ def _normalizar_hit(hit):
         "syscheck_uname_after": sc.get("uname_after"),
         "syscheck_perm_after": sc.get("perm_after"),
         "syscheck_process_name": proc.get("name"),
+        # Entrada 1.1 — crudo (capa P); se categoriza en dashboard.ia.evidencia
+        "sca": _sca_crudo(source.get("data")),
+        "cuenta_linux": ({k: (source.get("data") or {}).get(k) for k in ("uid", "gid", "shell")}
+                         if any((source.get("data") or {}).get(k) not in (None, "") for k in ("uid", "gid", "shell"))
+                         else None),
+        "win": _win_crudo(source.get("data")),
     }
 
 

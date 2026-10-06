@@ -117,9 +117,46 @@ def _canonical(obj):
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+# Huella SEMÁNTICA (versión "semantica_v1"): sólo lo que describe la situación.
+# Se excluyen metadatos de esquema/ejecución y contadores que cambian con cada
+# evento idéntico: `schema_version`, el texto derivado `technical_evidence_es`
+# (repite los campos estructurados y, en snapshots antiguos, incluía
+# `rule.firedtimes`) y `evidencia_tecnica.correlated_events` (antes era
+# firedtimes). La respuesta de Gemini nunca interviene. Timestamps, IDs,
+# agent.id y opensearch_id no forman parte de la entrada.
+FINGERPRINT_VERSION = "semantica_v1"
+_CLAVES_FUERA_DE_HUELLA = ("schema_version", "technical_evidence_es")
+_EVIDENCIA_FUERA_DE_HUELLA = ("correlated_events",)
+
+
+def entrada_semantica(entrada):
+    """Copia de la entrada sin metadatos ni contadores (no muta la original)."""
+    sem = {k: v for k, v in (entrada or {}).items() if k not in _CLAVES_FUERA_DE_HUELLA}
+    ev = sem.get("evidencia_tecnica")
+    if isinstance(ev, dict):
+        sem["evidencia_tecnica"] = {k: v for k, v in ev.items() if k not in _EVIDENCIA_FUERA_DE_HUELLA}
+    return sem
+
+
 def fingerprint_entrada(entrada):
-    """Huella ESTABLE de la entrada anonimizada (para deduplicar)."""
-    return hashlib.sha256(_canonical(entrada).encode("utf-8")).hexdigest()
+    """Huella ESTABLE del contenido semántico de la entrada anonimizada (para deduplicar)."""
+    return hashlib.sha256(_canonical(entrada_semantica(entrada)).encode("utf-8")).hexdigest()
+
+
+def _duplicado_de(cand, fp):
+    """
+    Primer candidato no excluido con la misma huella SEMÁNTICA. La huella del
+    otro se recalcula desde su snapshot congelado (no desde la columna
+    `fingerprint`, que en filas históricas puede ser de la versión anterior):
+    así no hace falta tocar ni migrar ninguna fila.
+    """
+    otros = (CandidatoDataset.objects.exclude(pk=cand.pk).exclude(estado="EXCLUIDO")
+             .select_related("alerta").order_by("creado_en"))
+    for otro in otros:
+        entrada_otro = construir_entrada(otro.alerta)
+        if entrada_otro and fingerprint_entrada(entrada_otro) == fp:
+            return otro.ejemplo_id
+    return ""
 
 
 def ejemplo_id_para(alerta):
@@ -243,16 +280,7 @@ def sincronizar_candidato(alerta):
     fugas = _fuga_de_identificadores(alerta, entrada, salida)
     priv_ok = priv_ok and not fugas
 
-    duplicado_de = ""
-    if fp:
-        otro = (CandidatoDataset.objects
-                .filter(fingerprint=fp)
-                .exclude(pk=cand.pk)
-                .exclude(estado="EXCLUIDO")
-                .order_by("creado_en")
-                .first())
-        if otro is not None:
-            duplicado_de = otro.ejemplo_id
+    duplicado_de = _duplicado_de(cand, fp) if fp else ""
 
     diag = _diagnostico(alerta, cand, entrada, salida, priv_ok, hallazgos, fugas, duplicado_de)
     incompleta_por = diag["incompleta_por"]
@@ -268,6 +296,7 @@ def sincronizar_candidato(alerta):
     else:
         estado = "INCOMPLETO"
 
+    diag["fingerprint_version"] = FINGERPRINT_VERSION
     cand.fingerprint = fp
     cand.privacidad_ok = priv_ok
     cand.duplicado_de = duplicado_de

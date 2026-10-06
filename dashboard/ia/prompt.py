@@ -59,12 +59,14 @@ def _texto_evidencia(nivel, grupos, ev):
             f"Hash disponible: {'sí' if ev['hash_present'] else 'no'}. "
             f"Tamaño: {ev['size_info']}. Usuario (rol anonimizado): {ev['user_role_category']}. "
             f"Proceso: {ev['process_category']}. "
-            f"Eventos correlacionados (firedtimes): {ev['correlated_events']}. "
             f"Telemetría: {ev['telemetry_source']}."
         )
     else:
         partes.append(f"Telemetría: {ev.get('telemetry_source', 'no_determinado')}. "
                       "Sólo hay descripción, nivel y grupos de la regla; sin datos FIM estructurados.")
+    extra = [k for k in ev if k.startswith(("sca_", "cuenta_"))]
+    if extra:
+        partes.append("Incluye evidencia estructurada adicional (categorías anonimizadas): " + ", ".join(extra) + ".")
     return " ".join(partes)
 
 _OBS_CVSS_POR_DEFECTO = {k: "no_determinado" for k in CVSS_CLAVES}
@@ -159,7 +161,9 @@ def construir_entrada_e(alert, activo):
     mant_estado, mant_categoria = _estado_ventana_mantenimiento(alert, activo, momento)
 
     return {
-        "schema_version": "1.0",
+        # Entrada 1.1 (3F.8): añade campos OPCIONALES sca_* / cuenta_* en evidencia_tecnica.
+        # Los snapshots 1.0 siguen siendo válidos y no se recalculan.
+        "schema_version": "1.1",
         "alert_description_es": anonimizar_texto(descripcion),
         "wazuh_level": nivel,
         "wazuh_rule_groups": grupos,
@@ -250,4 +254,28 @@ def construir_prompt(entrada_e):
         + f"  · proceso (anonimizado): {ev.get('process_category', 'no_determinado')}\n"
         + f"  · eventos correlacionados: {ev.get('correlated_events', 'no_determinado')}\n"
         + f"  · fuente de telemetría: {ev.get('telemetry_source', 'no_determinado')}\n"
+        + _lineas_evidencia_extra(ev)
     )
+
+
+_ETIQUETAS_EXTRA = {
+    "sca_resultado": "resultado de la comprobación SCA", "sca_resultado_anterior": "resultado SCA anterior",
+    "sca_id_comprobacion": "identificador de la comprobación SCA", "sca_control_cis": "control CIS",
+    "sca_categoria_control": "categoría del control", "sca_benchmark": "benchmark",
+    "sca_tacticas_mitre": "tácticas MITRE asociadas", "cuenta_operacion": "operación sobre la cuenta",
+    "cuenta_tipo": "tipo de cuenta", "cuenta_actor": "tipo de actor que hizo el cambio",
+    "cuenta_inicio_sesion_interactivo": "permite inicio de sesión interactivo",
+    "cuenta_atributos_cambiados": "atributos cambiados", "cuenta_grupo": "grupo afectado",
+    "cuenta_cambio_privilegios": "cambio de privilegios",
+}
+
+
+def _lineas_evidencia_extra(ev):
+    """Solo para campos 1.1 presentes; todos son categorías cerradas (nunca texto libre)."""
+    out = ""
+    for k, etiqueta in _ETIQUETAS_EXTRA.items():
+        if k in ev:
+            v = ev[k]
+            v = ", ".join(v) if isinstance(v, list) else v
+            out += f"  · {etiqueta}: {v if v not in ('', None) else 'ninguno'}\n"
+    return out

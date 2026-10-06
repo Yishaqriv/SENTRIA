@@ -12,3 +12,8 @@ db.sqlite3
 # todos los secretos desde variables de entorno (ver .env.example) y no
 # contiene valores literales de respaldo. Los archivos de entorno reales
 # (.env) siguen ignorados arriba.
+
+# Manifiestos privados del generador FIM de laboratorio (se escriben en
+# %LOCALAPPDATA%\SENTRIA\manifiestos_fim, nunca en el repo; esto es una red de seguridad).
+manifiestos_fim/
+fim_*.json

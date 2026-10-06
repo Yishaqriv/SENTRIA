@@ -184,6 +184,7 @@ _CAMPOS_EVIDENCIA_OVERRIDE = (
     "syscheck_path", "syscheck_event", "syscheck_mode", "syscheck_size_before",
     "syscheck_size_after", "syscheck_hash_present", "syscheck_uid_after",
     "syscheck_uname_after", "syscheck_perm_after", "syscheck_process_name",
+    "sca", "cuenta_linux", "win",          # entrada 1.1 (3F.8)
 )
 
 

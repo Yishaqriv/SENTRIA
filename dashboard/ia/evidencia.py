@@ -12,10 +12,26 @@ LISTA BLANCA de salida (nada fuera de esto llega al modelo):
 
 NUNCA se emite: ruta literal, hostname, IP, agent.id, usuario real, correo,
 `full_log`, secretos, ni ningún campo de capa P. Si un dato no existe -> "no_determinado".
+
+ENTRADA 1.1 (3F.8) — campos OPCIONALES, solo presentes cuando la telemetría los trae
+(los eventos FIM y los snapshots 1.0 no cambian):
+  SCA:     sca_resultado, sca_resultado_anterior, sca_id_comprobacion, sca_control_cis,
+           sca_categoria_control, sca_benchmark, sca_tacticas_mitre
+  Cuentas: cuenta_operacion, cuenta_tipo, cuenta_actor, cuenta_inicio_sesion_interactivo,
+           cuenta_atributos_cambiados, cuenta_grupo, cuenta_cambio_privilegios
+Todos son categorías cerradas o identificadores técnicos validados por patrón; nunca
+nombres de usuario/equipo, SIDs, rutas, comandos ni texto libre de la telemetría.
+
+`correlated_events` se mantiene en el contrato pero hoy SIEMPRE es
+"no_determinado": SENTRIA no calcula correlación entre eventos. `rule.firedtimes`
+es sólo un contador de disparos de la regla (crece con cada evento, sin relación
+causal) y NO se presenta como correlación.
 """
 from __future__ import annotations
 
+import ntpath
 import posixpath
+import re
 
 CATEGORIAS_RUTA = (
     "configuracion_sistema", "logs", "spool_impresion", "temporal",
@@ -56,11 +72,50 @@ _PREFIJOS_RUTA = (
 )
 
 
+# Laboratorio FIM aislado de Windows (Sprint 3E, LAPTOP-01). Misma idea que el de
+# Linux: sólo se emite la etiqueta. Comparación sin distinguir mayúsculas
+# (Wazuh suele informar las rutas Windows en minúsculas), con `\` o `/`, y tras
+# resolver `.`/`..`. Se evalúa ANTES que las categorías genéricas de Windows.
+_RUTA_LAB_CONTROLADO_WINDOWS = "c:\\sentria-lab\\"
+
+# Prefijos genéricos de Windows (ya normalizados: minúsculas, `\`, con `\` final).
+_PREFIJOS_RUTA_WINDOWS = (
+    (_RUTA_LAB_CONTROLADO_WINDOWS, "laboratorio_controlado"),
+    ("c:\\windows\\system32\\config\\", "configuracion_sistema"),
+    ("c:\\windows\\system32\\spool\\", "spool_impresion"),
+    ("c:\\windows\\logs\\", "logs"),
+    ("c:\\windows\\temp\\", "temporal"),
+    ("c:\\windows\\", "ejecutable_sistema"),
+    ("c:\\program files\\", "ejecutable_sistema"),
+    ("c:\\program files (x86)\\", "ejecutable_sistema"),
+    ("c:\\users\\", "home_anonimizado"),
+)
+
+_RUTA_WINDOWS_ABSOLUTA = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _es_ruta_windows(p):
+    """`C:\\...` o `C:/...` (absoluta con letra de unidad). UNC y relativas no."""
+    return bool(_RUTA_WINDOWS_ABSOLUTA.match(p))
+
+
+def _clasificar_ruta_windows(p):
+    # ntpath.normpath acepta `/` y `\`, colapsa separadores y resuelve `.`/`..`
+    # (un `..` que escape del laboratorio deja de estar bajo su raíz).
+    p_norm = ntpath.normpath(p).lower().rstrip("\\") + "\\"
+    for prefijo, categoria in _PREFIJOS_RUTA_WINDOWS:
+        if p_norm.startswith(prefijo):
+            return categoria
+    return "otra_no_determinada"
+
+
 def clasificar_ruta(path):
-    """Ruta absoluta -> categoría de la lista blanca. NO devuelve la ruta."""
+    """Ruta absoluta (Linux o Windows) -> categoría de la lista blanca. NO devuelve la ruta."""
     if not path or not isinstance(path, str):
         return "no_determinado"
     p = path.strip()
+    if _es_ruta_windows(p):
+        return _clasificar_ruta_windows(p)
     if not p.startswith("/"):
         return "no_determinado"
     # normpath quita siempre la barra final; se re-añade para comparar por prefijo
@@ -76,7 +131,11 @@ def extension_archivo(path):
     """Extensión (sin punto) o 'sin_extension' / 'no_determinado'. No revela el nombre."""
     if not path or not isinstance(path, str):
         return "no_determinado"
-    base = posixpath.basename(path.rstrip("/"))
+    p = path.strip()
+    if _es_ruta_windows(p):
+        base = ntpath.basename(ntpath.normpath(p).rstrip("\\"))
+    else:
+        base = posixpath.basename(p.rstrip("/"))
     if not base:
         return "no_determinado"
     _, ext = posixpath.splitext(base)
@@ -168,11 +227,156 @@ def resumen_tamano(size_before, size_after, event):
     return "no_determinado"
 
 
-def _int_o_no_determinado(x):
+
+# ---------------------------------------------------------------------------
+# Entrada 1.1 — SCA
+# ---------------------------------------------------------------------------
+_RE_ID_SCA = re.compile(r"^\d{1,9}$")
+_RE_CIS = re.compile(r"^\d{1,2}(\.\d{1,3}){0,5}$")
+_RE_TACTICA = re.compile(r"^TA\d{4}$")
+_SCA_RESULTADOS = {"failed": "fallida", "passed": "superada", "not applicable": "no_aplicable"}
+_CIS_CATEGORIAS = {
+    "cis_ubuntu": {"1": "configuracion_inicial", "2": "servicios", "3": "red", "4": "cortafuegos",
+                   "5": "control_acceso", "6": "registro_auditoria", "7": "mantenimiento_sistema"},
+    "cis_windows": {"1": "politicas_cuenta", "2": "politicas_locales", "5": "servicios_sistema",
+                    "9": "cortafuegos", "17": "auditoria_avanzada", "18": "plantillas_admin_equipo",
+                    "19": "plantillas_admin_usuario"},
+}
+
+
+def _benchmark(policy):
+    p = str(policy or "").lower()
+    if "ubuntu" in p or "linux" in p:
+        return "cis_ubuntu" if "ubuntu" in p else "cis_linux"
+    if "windows" in p:
+        return "cis_windows"
+    return "otro" if p else "no_determinado"
+
+
+def evidencia_sca(sca):
+    """Dict crudo de `sentria_backend._sca_crudo` -> campos categóricos SCA (o {})."""
+    if not isinstance(sca, dict):
+        return {}
+    bench = _benchmark(sca.get("policy"))
+    cis = str(sca.get("cis") or "").split(",")[0].strip()
+    cis = cis if _RE_CIS.match(cis) else None
+    seccion = cis.split(".")[0] if cis else None
+    tacticas = sca.get("mitre_tactics") or []
+    if isinstance(tacticas, str):
+        tacticas = tacticas.split(",")
+    tacticas = sorted({t.strip() for t in tacticas if _RE_TACTICA.match(str(t).strip())})[:5]
+    ev = {
+        "sca_resultado": _SCA_RESULTADOS.get(str(sca.get("result") or "").strip().lower(), "no_determinado"),
+        "sca_id_comprobacion": str(sca.get("id")) if _RE_ID_SCA.match(str(sca.get("id") or "")) else "no_determinado",
+        # Puntos -> guiones bajos: "1.3.1.3" parecería una IPv4 al validador de privacidad del dataset.
+        "sca_control_cis": ("cis_" + cis.replace(".", "_")) if cis else "no_determinado",
+        "sca_categoria_control": _CIS_CATEGORIAS.get(bench, {}).get(seccion, "no_determinado"),
+        "sca_benchmark": bench,
+        "sca_tacticas_mitre": tacticas,
+    }
+    prev = str(sca.get("previous_result") or "").strip().lower()
+    if prev:
+        ev["sca_resultado_anterior"] = _SCA_RESULTADOS.get(prev, "no_determinado")
+    return ev
+
+
+# ---------------------------------------------------------------------------
+# Entrada 1.1 — Cuentas (Linux: reglas adduser; Windows: Security EventIDs)
+# ---------------------------------------------------------------------------
+_OPERACION_LINUX = {"5901": "crear_grupo", "5902": "crear_usuario", "5903": "eliminar_usuario_o_grupo",
+                    "5904": "modificar_usuario"}
+_OPERACION_WIN = {
+    "4720": "crear_usuario", "4722": "habilitar_usuario", "4725": "deshabilitar_usuario",
+    "4726": "eliminar_usuario", "4738": "modificar_usuario", "4781": "renombrar_usuario",
+    "4723": "cambiar_contrasena", "4724": "restablecer_contrasena", "4740": "bloquear_cuenta",
+    "4767": "desbloquear_cuenta", "4727": "crear_grupo", "4731": "crear_grupo", "4754": "crear_grupo",
+    "4728": "anadir_miembro_grupo", "4732": "anadir_miembro_grupo", "4756": "anadir_miembro_grupo",
+    "4729": "quitar_miembro_grupo", "4733": "quitar_miembro_grupo", "4757": "quitar_miembro_grupo",
+}
+_GRUPOS_WIN = {"544": "administradores", "545": "usuarios", "546": "invitados", "547": "usuarios_avanzados",
+               "551": "operadores_copia", "555": "escritorio_remoto", "562": "dcom", "578": "admins_hyperv",
+               "580": "administracion_remota"}
+_GRUPOS_PRIVILEGIADOS = {"administradores", "usuarios_avanzados", "operadores_copia", "escritorio_remoto",
+                         "dcom", "admins_hyperv", "administracion_remota"}
+_ATRIBUTOS_WIN = {
+    "displayName": "nombre_visible", "userPrincipalName": "nombre_principal", "samAccountName": "nombre_cuenta",
+    "homeDirectory": "directorio_personal", "homePath": "directorio_personal", "scriptPath": "script_inicio",
+    "profilePath": "perfil", "userWorkstations": "estaciones_permitidas", "passwordLastSet": "contrasena",
+    "accountExpires": "expiracion", "primaryGroupId": "grupo_principal", "allowedToDelegateTo": "delegacion",
+    "oldUacValue": "control_cuenta", "newUacValue": "control_cuenta", "userAccountControl": "control_cuenta",
+    "userParameters": "parametros", "sidHistory": "historial_sid", "logonHours": "horas_inicio_sesion",
+}
+_RE_SID_DOMINIO = re.compile(r"^S-1-5-21-\d+-\d+-\d+-(\d+)$")
+
+
+def _tipo_sid(sid, es_equipo=False):
+    if es_equipo:
+        return "cuenta_equipo"
+    s = str(sid or "")
+    if s in ("S-1-5-18", "S-1-5-19", "S-1-5-20"):
+        return "cuenta_servicio_sistema"
+    m = _RE_SID_DOMINIO.match(s)
+    if m:
+        rid = int(m.group(1))
+        return {500: "administrador_integrado", 501: "invitado_integrado", 503: "cuenta_predeterminada",
+                504: "cuenta_wdag"}.get(rid, "usuario" if rid >= 1000 else "no_determinado")
+    return "no_determinado"
+
+
+def _grupo_sid(sid):
+    m = re.match(r"^S-1-5-32-(\d+)$", str(sid or ""))
+    return _GRUPOS_WIN.get(m.group(1), "grupo_integrado_otro") if m else ("grupo_local_o_dominio"
+                                                                          if _RE_SID_DOMINIO.match(str(sid or "")) else "no_determinado")
+
+
+def _num(x):
     try:
         return int(str(x).strip())
     except (TypeError, ValueError):
-        return "no_determinado"
+        return None
+
+
+def evidencia_cuenta(alert):
+    """Campos categóricos de gestión de cuentas (o {} si el evento no es de cuentas)."""
+    a = alert or {}
+    rid = str(a.get("rule_id") or "")
+    win = a.get("win") if isinstance(a.get("win"), dict) else None
+    if rid in _OPERACION_LINUX:
+        lx = a.get("cuenta_linux") if isinstance(a.get("cuenta_linux"), dict) else {}
+        uid, gid = _num(lx.get("uid")), _num(lx.get("gid"))
+        ev = {"cuenta_operacion": _OPERACION_LINUX[rid]}
+        if rid == "5901":
+            ev["cuenta_tipo"] = ("grupo_root" if gid == 0 else "grupo_sistema" if gid is not None and gid < 1000
+                                 else "grupo_usuario" if gid is not None else "no_determinado")
+        else:
+            ev["cuenta_tipo"] = ("superusuario" if uid == 0 else "sistema" if uid is not None and (uid < 1000 or uid == 65534)
+                                 else "usuario" if uid is not None else "no_determinado")
+        # el decodificador puede dejar puntuación final ("nologin,"): solo se usa el nombre base limpio
+        shell = posixpath.basename(str(lx.get("shell") or "").strip().strip(",;")).lower()
+        if rid == "5902":
+            ev["cuenta_inicio_sesion_interactivo"] = (False if shell in ("nologin", "false") else
+                                                      True if shell in ("bash", "sh", "dash", "zsh", "fish", "ksh", "csh", "tcsh")
+                                                      else "no_determinado")
+        ev["cuenta_cambio_privilegios"] = "privilegios_root" if (uid == 0 or gid == 0) else "no_indicado"
+        return ev
+    if win and win.get("event_id") in _OPERACION_WIN and str(win.get("channel") or "").lower() == "security":
+        op = _OPERACION_WIN[win["event_id"]]
+        ev = {"cuenta_operacion": op, "cuenta_actor": _tipo_sid(win.get("subject_sid"))}
+        if "miembro_grupo" in op:
+            grupo = _grupo_sid(win.get("target_sid"))
+            ev["cuenta_grupo"] = grupo
+            ev["cuenta_tipo"] = _tipo_sid(win.get("member_sid"))
+            priv = grupo in _GRUPOS_PRIVILEGIADOS
+            ev["cuenta_cambio_privilegios"] = (("elevacion" if op.startswith("anadir") else "reduccion") if priv
+                                               else "sin_cambio_privilegiado" if grupo != "no_determinado" else "no_indicado")
+        else:
+            ev["cuenta_tipo"] = _tipo_sid(win.get("target_sid"), bool(win.get("target_es_equipo")))
+            attrs = sorted({_ATRIBUTOS_WIN[k] for k in (win.get("atributos") or []) if k in _ATRIBUTOS_WIN})
+            if op == "modificar_usuario":
+                ev["cuenta_atributos_cambiados"] = attrs
+            ev["cuenta_cambio_privilegios"] = "control_cuenta_modificado" if "control_cuenta" in attrs else "no_indicado"
+        return ev
+    return {}
 
 
 def construir_evidencia_tecnica(alert):
@@ -180,7 +384,8 @@ def construir_evidencia_tecnica(alert):
     `alert`: dict de una alerta Wazuh (claves planas proyectadas por
     `get_latest_alerts`: syscheck_path, syscheck_event, syscheck_mode,
     syscheck_size_before/after, syscheck_hash_present, syscheck_uid_after,
-    syscheck_uname_after, syscheck_process_name, rule_firedtimes, decoder_name).
+    syscheck_uname_after, syscheck_process_name, decoder_name). `rule_firedtimes`
+    se ignora a propósito: no es correlación.
 
     Devuelve SÓLO la lista blanca de valores seguros/categóricos.
     """
@@ -211,7 +416,10 @@ def construir_evidencia_tecnica(alert):
         "user_role_category": categoria_usuario(a.get("syscheck_uid_after"), a.get("syscheck_uname_after"))
                               if hay_fim else "no_determinado",
         "telemetry_source": telemetry,
-        "correlated_events": _int_o_no_determinado(a.get("rule_firedtimes")),
+        "correlated_events": "no_determinado",   # sin correlación calculada (ver cabecera)
         "rule_id": (str(a["rule_id"]) if a.get("rule_id") not in (None, "") else "no_determinado"),
         "rule_groups": grupos,
+        # Entrada 1.1: SOLO si la telemetría los trae (FIM y snapshots 1.0 no cambian)
+        **evidencia_sca(a.get("sca")),
+        **evidencia_cuenta(a),
     }
