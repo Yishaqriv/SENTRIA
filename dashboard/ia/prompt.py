@@ -64,7 +64,7 @@ def _texto_evidencia(nivel, grupos, ev):
     else:
         partes.append(f"Telemetría: {ev.get('telemetry_source', 'no_determinado')}. "
                       "Sólo hay descripción, nivel y grupos de la regla; sin datos FIM estructurados.")
-    extra = [k for k in ev if k.startswith(("sca_", "cuenta_"))]
+    extra = [k for k in ev if k.startswith(("sca_", "cuenta_", "win_"))]
     if extra:
         partes.append("Incluye evidencia estructurada adicional (categorías anonimizadas): " + ", ".join(extra) + ".")
     return " ".join(partes)
@@ -127,6 +127,71 @@ def _ventana_operativa(ts, activo):
     return "dentro_horario_operativo" if dentro else "fuera_horario_operativo"
 
 
+# Hora del EVENTO (horario y ventana) frente a hora de RECEPCIÓN (diagnóstico).
+# - `timestamp` (= `@timestamp`: el pipeline de Filebeat de Wazuh lo copia de `timestamp`) es la hora en que el gestor
+#   generó la alerta. Un agente Windows puede entregar eventos con horas o días de retraso.
+# - Windows: `win.system.systemTime` = TimeCreated/SystemTime, hora UTC en que Windows registró el evento.
+# Sin hora original válida en un evento Windows NO se usa la recepción: horario `no_determinado`, ventana `indeterminado`.
+_TOLERANCIA_RELOJ = datetime.timedelta(minutes=5)
+_ANIO_MINIMO_EVENTO = 2000          # FILETIME 0 = 1601: hora no inicializada
+
+
+def _a_utc(dt):
+    return dt.replace(tzinfo=datetime.timezone.utc) if dt.tzinfo is None else dt.astimezone(datetime.timezone.utc)
+
+
+def _es_evento_windows(alert):
+    """Evento del registro de eventos de Windows (eventchannel), aunque falte la capa `win`."""
+    if isinstance(alert.get("win"), dict):
+        return True
+    return (str(alert.get("decoder_name") or "").lower() == "windows_eventchannel"
+            or any(g.lower().startswith("windows") for g in _grupos_lista(alert.get("groups"))))
+
+
+def hora_del_evento(alert):
+    """
+    -> (momento UTC | None, fuente, recepción UTC | None).
+    fuente: 'recepcion_wazuh' (no Windows: única hora disponible, comportamiento anterior) ·
+            'hora_original_windows' · 'hora_original_ausente' · 'hora_original_invalida' ·
+            'hora_original_sin_zona' · 'hora_original_incoherente' (anterior a 2000 o posterior a la recepción
+            en más de la tolerancia de reloj).
+    """
+    recepcion = _parsear_ts(alert.get("timestamp"))
+    recepcion = _a_utc(recepcion) if recepcion is not None else None
+    if not _es_evento_windows(alert):
+        return recepcion, "recepcion_wazuh", recepcion
+    win = alert.get("win") if isinstance(alert.get("win"), dict) else {}
+    crudo = win.get("system_time")
+    if crudo in (None, ""):
+        return None, "hora_original_ausente", recepcion
+    if not isinstance(crudo, str) or len(crudo) > 40:
+        return None, "hora_original_invalida", recepcion
+    original = _parsear_ts(crudo.strip())
+    if original is None:
+        return None, "hora_original_invalida", recepcion
+    if original.tzinfo is None:
+        return None, "hora_original_sin_zona", recepcion
+    original = _a_utc(original)
+    if original.year < _ANIO_MINIMO_EVENTO or (recepcion is not None and original > recepcion + _TOLERANCIA_RELOJ):
+        return None, "hora_original_incoherente", recepcion
+    return original, "hora_original_windows", recepcion
+
+
+def diagnostico_tiempo(alert, activo=None):
+    """Capa P (snapshot `_diagnostico_tiempo`, fuera de la entrada y de la huella): qué hora se usó y por qué."""
+    momento, fuente, recepcion = hora_del_evento(alert)
+    d = {"fuente": fuente,
+         "hora_evento_utc": momento.isoformat() if momento else None,
+         "recepcion_utc": recepcion.isoformat() if recepcion else None,
+         "retraso_segundos": int((recepcion - momento).total_seconds()) if momento and recepcion else None}
+    try:
+        from dashboard.mantenimiento import ventana_declarada_despues
+        d["ventana_registrada_despues_del_evento"] = ventana_declarada_despues(activo, momento)
+    except Exception:
+        d["ventana_registrada_despues_del_evento"] = None
+    return d
+
+
 def _attack_vector_conservador(grupos):
     g = set(grupos)
     if g & _GRUPOS_VECTOR_RED:
@@ -155,15 +220,16 @@ def construir_entrada_e(alert, activo):
     # Evidencia técnica: SÓLO valores categóricos/anonimizados (lista blanca).
     evidencia_tecnica = construir_evidencia_tecnica({**alert, "groups": grupos})
 
-    momento = _parsear_ts(alert.get("timestamp"))
-    if momento is not None and momento.tzinfo is None:
-        momento = momento.replace(tzinfo=datetime.timezone.utc)
+    # Horario y ventana con la hora del EVENTO (en Windows, la original; nunca la recepción en su lugar).
+    momento, _fuente, _recepcion = hora_del_evento(alert)
     mant_estado, mant_categoria = _estado_ventana_mantenimiento(alert, activo, momento)
 
     return {
         # Entrada 1.1 (3F.8): añade campos OPCIONALES sca_* / cuenta_* en evidencia_tecnica.
-        # Los snapshots 1.0 siguen siendo válidos y no se recalculan.
-        "schema_version": "1.1",
+        # Entrada 1.2: añade campos OPCIONALES win_* (solo eventos Windows Application/System) y, en eventos
+        # Windows, calcula horario y ventana con la hora original del evento (`hora_del_evento`).
+        # Los snapshots 1.0/1.1 siguen siendo válidos y no se recalculan; la huella ignora la versión.
+        "schema_version": "1.2",
         "alert_description_es": anonimizar_texto(descripcion),
         "wazuh_level": nivel,
         "wazuh_rule_groups": grupos,
@@ -172,7 +238,7 @@ def construir_entrada_e(alert, activo):
         "asset_criticality": activo.criticidad,
         "asset_os_family": activo.os_family,
         "asset_os_role": activo.os_role,
-        "operational_window": _ventana_operativa(alert.get("timestamp"), activo),
+        "operational_window": _ventana_operativa(momento, activo),
         "maintenance_window": mant_estado,
         # SÓLO la categoría controlada llega al prompt; descripción/creador/auditoría NO.
         "maintenance_category": mant_categoria or "no_aplica",
@@ -267,11 +333,13 @@ _ETIQUETAS_EXTRA = {
     "cuenta_inicio_sesion_interactivo": "permite inicio de sesión interactivo",
     "cuenta_atributos_cambiados": "atributos cambiados", "cuenta_grupo": "grupo afectado",
     "cuenta_cambio_privilegios": "cambio de privilegios", "cuenta_estado": "estado de la cuenta",
+    "win_canal": "canal del registro de eventos de Windows", "win_proveedor": "proveedor del evento",
+    "win_proveedor_categoria": "categoría del proveedor", "win_id_evento": "ID de evento de Windows",
 }
 
 
 def _lineas_evidencia_extra(ev):
-    """Solo para campos 1.1 presentes; todos son categorías cerradas (nunca texto libre)."""
+    """Solo para campos 1.1/1.2 presentes; todos son categorías cerradas o identificadores validados (nunca texto libre)."""
     out = ""
     for k, etiqueta in _ETIQUETAS_EXTRA.items():
         if k in ev:

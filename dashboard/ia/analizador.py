@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from .anonimizacion import anonimizar_texto
 from .contrato import parsear_json_estricto, validar_salida_ia
-from .prompt import construir_entrada_e, construir_prompt
+from .prompt import construir_entrada_e, construir_prompt, diagnostico_tiempo
 from .proveedores import ProveedorIA, nombre_proveedor_activo, obtener_proveedor
 
 RESULTADO_CLAVES = (
@@ -128,6 +128,8 @@ def analizar_alerta(alert, activo, proveedor=None):
     """
     entrada = construir_entrada_e(alert, activo)
     prompt = construir_prompt(entrada)
+    # Capa P en el snapshot (no llega al prompt ni al candidato): hora del evento usada y recepción.
+    entrada["_diagnostico_tiempo"] = diagnostico_tiempo(alert, activo)
 
     if isinstance(proveedor, ProveedorIA):
         prov = proveedor

@@ -104,6 +104,9 @@ _SOURCE_FIELDS = [
     "data.sca.check.compliance.mitre_tactics",
     "data.uid", "data.gid", "data.shell",
     "data.win.system.eventID", "data.win.system.channel", "data.win.eventdata",
+    # Entrada 1.2: proveedor de los eventos Application/System (evidencia.py solo emite la lista permitida)
+    # y hora original del evento Windows (TimeCreated/SystemTime, UTC), distinta de la recepción en Wazuh.
+    "data.win.system.providerName", "data.win.system.systemTime",
 ]
 
 # Atributos de cuenta que informan los eventos 4720/4738 (documentación de Microsoft de ambos eventos).
@@ -131,16 +134,19 @@ def _sca_crudo(data):
 
 
 def _win_crudo(data):
-    """Capa P: SIDs, NOMBRES de los atributos informados, formato del evento y valores UAC (hex).
-    El nombre de usuario NO se propaga (solo si termina en `$`, es decir, cuenta de equipo); de los
-    atributos solo se usa si están informados, nunca su valor."""
+    """Capa P: SIDs, NOMBRES de los atributos informados, formato del evento, valores UAC (hex),
+    proveedor y hora original del evento (entrada 1.2). El nombre de usuario NO se propaga (solo si termina en `$`,
+    es decir, cuenta de equipo); de los atributos solo se usa si están informados, nunca su valor.
+    Del resto de `eventdata` (aplicación, rutas, mensajes) no se propaga nada."""
     win = (data or {}).get("win") or {}
     sysw = win.get("system") or {}
-    if not sysw.get("eventID"):
+    if not sysw.get("eventID") and not sysw.get("channel"):
         return None
     ed = win.get("eventdata") or {}
     informados = sorted(k for k in _WIN_ATRIBUTOS_CUENTA if str(ed.get(k, "")).strip() not in ("", "-"))
-    return {"event_id": str(sysw.get("eventID")), "channel": sysw.get("channel"),
+    return {"event_id": (str(sysw.get("eventID")) if sysw.get("eventID") not in (None, "") else None),
+            "channel": sysw.get("channel"), "proveedor": sysw.get("providerName"),
+            "system_time": sysw.get("systemTime"),
             "target_sid": ed.get("targetSid"), "subject_sid": ed.get("subjectUserSid"),
             "member_sid": ed.get("memberSid"),
             "target_es_equipo": str(ed.get("targetUserName") or "").endswith("$"),

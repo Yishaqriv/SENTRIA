@@ -63,17 +63,30 @@ def cancelar_ventana(ventana, *, autor=None):
 def estado_para(activo, momento):
     """
     Contexto de mantenimiento de una alerta. Devuelve (estado, categoria|None):
-      - ("dentro_ventana_declarada", <categoria>) si una ventana ACTIVA cubre `momento`;
-      - ("sin_ventana_declarada", None) si hay activo y hora pero ninguna coincide;
-      - ("indeterminado", None) si falta el activo o `momento`.
+      - ("dentro_ventana_declarada", <categoria>) si una ventana ACTIVA, registrada ANTES del evento
+        (`creada_en <= momento`), cubre `momento`;
+      - ("sin_ventana_declarada", None) si hay activo y hora pero ninguna coincide. Una ventana registrada
+        después del evento no lo autoriza retroactivamente (ver `ventana_declarada_despues`);
+      - ("indeterminado", None) si falta el activo o `momento` (p. ej., evento Windows sin hora original válida).
+    `momento` es la hora del EVENTO (`prompt.hora_del_evento`), no la de recepción.
     NUNCA devuelve "fuera_ventana_declarada".
     """
     if activo is None or getattr(activo, "pk", None) is None or momento is None:
         return "indeterminado", None
-    v = (VentanaMantenimiento.objects
-         .filter(activo_logico=activo, estado="ACTIVA",
-                 inicio__lte=momento, fin__gte=momento)
+    v = (_cubren(activo, momento).filter(creada_en__lte=momento)
          .order_by("inicio").first())
     if v is None:
         return "sin_ventana_declarada", None
     return "dentro_ventana_declarada", v.categoria
+
+
+def _cubren(activo, momento):
+    return VentanaMantenimiento.objects.filter(activo_logico=activo, estado="ACTIVA",
+                                               inicio__lte=momento, fin__gte=momento)
+
+
+def ventana_declarada_despues(activo, momento):
+    """Diagnóstico: ¿hay una ventana ACTIVA que cubre `momento` pero se registró después? (None si no aplica)."""
+    if activo is None or getattr(activo, "pk", None) is None or momento is None:
+        return None
+    return _cubren(activo, momento).filter(creada_en__gt=momento).exists()

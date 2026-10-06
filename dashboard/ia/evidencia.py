@@ -20,6 +20,9 @@ ENTRADA 1.1 (3F.8) — campos OPCIONALES, solo presentes cuando la telemetría l
   Cuentas: cuenta_operacion, cuenta_tipo, cuenta_actor, cuenta_inicio_sesion_interactivo,
            cuenta_atributos_cambiados (lista o "no_determinado"), cuenta_grupo, cuenta_cambio_privilegios,
            cuenta_estado (deshabilitada/habilitada, solo con UAC nuevo válido)
+ENTRADA 1.2 — campos OPCIONALES solo para eventos Windows de los canales Application/System:
+  win_canal, win_proveedor (lista permitida de proveedores integrados de Windows),
+  win_proveedor_categoria, win_id_evento
 Todos son categorías cerradas o identificadores técnicos validados por patrón; nunca
 nombres de usuario/equipo, SIDs, rutas, comandos ni texto libre de la telemetría.
 
@@ -412,6 +415,60 @@ def evidencia_cuenta(alert):
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Entrada 1.2 — Eventos Windows de los canales Application/System
+# ---------------------------------------------------------------------------
+_CANALES_WIN = {"application": "aplicacion", "system": "sistema"}
+# Lista permitida: SOLO proveedores integrados de Windows (nombres públicos de Microsoft) -> (nombre, categoría).
+# Un proveedor de terceros puede revelar el software personal del equipo: nunca se emite su nombre.
+_PROVEEDORES_WIN = {p.lower(): (p, c) for p, c in (
+    ("Application Error", "informe_fallo_aplicacion"),
+    ("Application Hang", "informe_fallo_aplicacion"),
+    ("Windows Error Reporting", "informe_fallo_aplicacion"),
+    ("Microsoft-Windows-WER-SystemErrorReporting", "informe_fallo_sistema"),
+    (".NET Runtime", "entorno_ejecucion_net"),
+    ("MsiInstaller", "instalador_windows"),
+    ("Microsoft-Windows-RestartManager", "gestor_reinicio"),
+    ("Microsoft-Windows-WindowsUpdateClient", "actualizacion_windows"),
+    ("VSS", "instantaneas_volumen"),
+    ("Microsoft-Windows-User Profiles Service", "perfiles_usuario"),
+    ("Microsoft-Windows-AppModel-State", "estado_aplicaciones"),
+    ("Microsoft-Windows-Winlogon", "inicio_sesion"),
+    ("Microsoft-Windows-NDIS", "red_controlador"),
+    ("Service Control Manager", "control_servicios"),
+    ("Microsoft-Windows-Kernel-Power", "energia"),
+    ("Microsoft-Windows-Kernel-General", "nucleo"),
+    ("Microsoft-Windows-DistributedCOM", "dcom"),
+    ("Microsoft-Windows-Time-Service", "sincronizacion_hora"),
+    ("Microsoft-Windows-Eventlog", "registro_eventos"),
+    ("disk", "almacenamiento"),
+    ("Ntfs", "almacenamiento"),
+)}
+# Solo para decidir entre «fuera de la lista» y «no válido»; el valor nunca se emite.
+_RE_PROVEEDOR_WIN = re.compile(r"[A-Za-z0-9.][A-Za-z0-9 ._()-]{0,127}")
+_RE_ID_EVENTO_WIN = re.compile(r"[0-9]{1,5}")
+
+
+def evidencia_evento_windows(win):
+    """
+    Eventos Windows Application/System -> canal, proveedor (lista permitida), categoría e ID de evento
+    (o {} para cualquier otro canal: Security sigue en `evidencia_cuenta`).
+    Proveedor válido fuera de la lista: nombre `no_determinado`, categoría `no_catalogado`.
+    Ausente o inválido: `no_determinado`. Del `eventdata` no se usa nada.
+    """
+    if not isinstance(win, dict):
+        return {}
+    canal = _CANALES_WIN.get(str(win.get("channel") or "").strip().lower())
+    if canal is None:
+        return {}
+    prov = str(win.get("proveedor") or "").strip()
+    nombre, categoria = _PROVEEDORES_WIN.get(prov.lower(), ("no_determinado", "no_catalogado"
+                                                            if _RE_PROVEEDOR_WIN.fullmatch(prov) else "no_determinado"))
+    eid = "" if win.get("event_id") is None else str(win.get("event_id")).strip()   # el ID 0 es válido
+    eid = str(int(eid)) if _RE_ID_EVENTO_WIN.fullmatch(eid) and int(eid) <= 65535 else "no_determinado"
+    return {"win_canal": canal, "win_proveedor": nombre, "win_proveedor_categoria": categoria, "win_id_evento": eid}
+
+
 def construir_evidencia_tecnica(alert):
     """
     `alert`: dict de una alerta Wazuh (claves planas proyectadas por
@@ -455,4 +512,6 @@ def construir_evidencia_tecnica(alert):
         # Entrada 1.1: SOLO si la telemetría los trae (FIM y snapshots 1.0 no cambian)
         **evidencia_sca(a.get("sca")),
         **evidencia_cuenta(a),
+        # Entrada 1.2: SOLO eventos Windows Application/System
+        **evidencia_evento_windows(a.get("win")),
     }
