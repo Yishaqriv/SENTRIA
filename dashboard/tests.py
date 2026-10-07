@@ -5138,3 +5138,317 @@ class AuditoriaDispositivoWindowsTests(SimpleTestCase):
         viejo["evidencia_tecnica"] = {k: v for k, v in viejo["evidencia_tecnica"].items() if not k.startswith("win_")}
         viejo["schema_version"] = "1.3"                      # snapshot anterior: no cambia ni su contenido ni su huella
         self.assertEqual(_dsm.construir_entrada(SimpleNamespace(contexto_ia_snapshot=viejo)), viejo)
+
+
+# ---------------------------------------------------------------------------
+# Sellos de integridad: entradas reproducibles y congeladas
+# ---------------------------------------------------------------------------
+from dashboard import sellos as _sellos
+from dashboard.models import ConfirmacionBorrador, EntradaRevisada
+from django.forms.models import model_to_dict as _m2d
+
+_BASE_GOLDEN = {
+    "alert_description_es": "Se modificó un archivo vigilado.", "wazuh_level": 7,
+    "wazuh_rule_groups": ["ossec", "syscheck", "syscheck_file"], "wazuh_rule_id": "550",
+    "asset_type": "estacion_publica", "asset_criticality": "media", "asset_os_family": "windows",
+    "asset_os_role": "estacion_cliente", "operational_window": "dentro_horario_operativo",
+    "maintenance_window": "sin_ventana_declarada", "maintenance_category": "no_aplica",
+    "authorized_context_es": "Uso público de navegación y ofimática.",
+    "technical_evidence_es": "Solo hay descripción, nivel y grupos.",
+    "observed_cvss_factors": {"attack_vector": "local", "attack_complexity": "no_determinado",
+        "privileges_required": "no_determinado", "user_interaction": "no_determinado", "scope": "no_determinado",
+        "confidentiality_impact": "no_determinado", "integrity_impact": "no_determinado", "availability_impact": "no_determinado"},
+}
+
+
+def _snap_golden(version, **extra):
+    d = dict(_BASE_GOLDEN, schema_version=version); d.update(extra); return d
+
+
+_SNAPSHOTS_GOLDEN = {
+    "1.0": _snap_golden("1.0", evidencia_tecnica={"fim_event_type": "modified", "path_category": "laboratorio_controlado", "correlated_events": 3}),
+    "1.1": _snap_golden("1.1", evidencia_tecnica={"sca_benchmark": "cis_ubuntu", "sca_resultado": "fallida", "cuenta_operacion": "no_aplica"}),
+    "1.2": _snap_golden("1.2", evidencia_tecnica={"win_canal": "system", "win_proveedor_categoria": "servicios", "win_id_evento": "7036"}),
+    "1.3": _snap_golden("1.3", maintenance_scope="archivos_laboratorio", maintenance_scope_match="coincide",
+                        evidencia_tecnica={"fim_event_type": "deleted", "path_category": "laboratorio_controlado"},
+                        _diagnostico_tiempo={"fuente": "systemTime"}),
+    "1.4": _snap_golden("1.4", maintenance_scope="conexion_dispositivos", maintenance_scope_match="coincide",
+                        evidencia_tecnica={"win_auditoria_subcategoria": "plug_and_play", "win_dispositivo_clase": "teclado"},
+                        _diagnostico_tiempo={"fuente": "systemTime"}),
+}
+# Huellas de integridad de la entrada calculadas con la lista blanca del commit fe62d69.
+_HUELLAS_GOLDEN = {
+    "1.0": "122d37cc48a144e1f8bb4db0a489995b6f369881590cce1b744e44de89ffe045",
+    "1.1": "088c7859023361cced3e77e3ce82c4d59c2539b8a613bfab18a845ce7fa6e66e",
+    "1.2": "8792052d10c73e5c5ecacbda76094d49212249f75b9ac8d95edc816a67d83dd8",
+    "1.3": "09b526d520bfe7f76f49e368ce2e4bf9ed1c77276c1a6cffa5076fd85685e481",
+    "1.4": "dd9dd83c2ec832b000f34a53e0b5575276eebd60f0158ac76ba6706b6e9a3e04",
+}
+
+
+class CompatibilidadEntradasTests(SimpleTestCase):
+    def test_golden_1_0_a_1_4_misma_entrada_que_fe62d69(self):
+        for v, snap in _SNAPSHOTS_GOLDEN.items():
+            ent = _ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=snap))
+            self.assertEqual(_sellos.huella_integridad(ent), _HUELLAS_GOLDEN[v], v)
+            self.assertNotIn("_diagnostico_tiempo", ent)
+
+    def test_lista_blanca_versionada(self):
+        # Cambiar _CLAVES_ENTRADA sin cambiar ENTRADA_SELECCION_VERSION debe romper este test.
+        self.assertEqual(_ds.ENTRADA_SELECCION_VERSION, "lista_blanca_v2")
+        self.assertEqual(set(_ds._CLAVES_ENTRADA) - set(_sellos.LEGADO_CLAVES),
+                         {"maintenance_scope", "maintenance_scope_match"})
+
+    def test_cambiar_la_heuristica_del_vector_no_altera_entradas_existentes(self):
+        antes = {v: _ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=s)) for v, s in _SNAPSHOTS_GOLDEN.items()}
+        with mock.patch("dashboard.ia.prompt._attack_vector_conservador", return_value="red"):
+            for v, s in _SNAPSHOTS_GOLDEN.items():
+                self.assertEqual(_ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=s)), antes[v])
+
+    def test_huella_integridad_distinta_de_la_semantica(self):
+        a = _SNAPSHOTS_GOLDEN["1.3"]; b = dict(a, schema_version="1.4")
+        ea = _ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=a))
+        eb = _ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=b))
+        self.assertEqual(_ds.fingerprint_entrada(ea), _ds.fingerprint_entrada(eb))      # dedupe: iguales
+        self.assertNotEqual(_sellos.huella_integridad(ea), _sellos.huella_integridad(eb))  # integridad: distintas
+        self.assertEqual(_sellos.serializar_canonico({"b": 1, "a": "ñ"}), '{"a":"ñ","b":1}')
+        self.assertEqual(_sellos.SERIALIZACION_VERSION, "json_canonico_v1")
+
+
+class SellosFlujoTests(TestCase):
+    def setUp(self):
+        self.a1 = User.objects.create_user("sella", password="p")
+        self.a2 = User.objects.create_user("sellb", password="p")
+        self.alerta = _alerta_completed(veredicto_ia="REQUIERE_ATENCION")
+        registrar_revision(self.alerta, accion="CORREGIDA", motivo_categoria="mantenimiento_programado",
+                           autor=self.a1, veredicto_gt="FALSO_POSITIVO")
+        self.cand = _cand_de(self.alerta)
+
+    def _mutar_snapshot(self):
+        snap = dict(self.alerta.contexto_ia_snapshot); snap["wazuh_level"] = 12
+        Alert.objects.filter(pk=self.alerta.pk).update(contexto_ia_snapshot=snap)
+        self.cand.refresh_from_db()
+
+    def test_primer_borrador_congela_y_es_estable(self):
+        _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1)
+        _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1)
+        regs = EntradaRevisada.objects.filter(candidato=self.cand)
+        self.assertEqual(regs.count(), 1)
+        r = regs.get()
+        self.assertEqual((r.version, r.origen, r.seleccion_version, r.serializacion_version),
+                         (1, "ENTRADA_REVISADA", "lista_blanca_v2", "json_canonico_v1"))
+        self.assertEqual(r.entrada_sha256, _sellos.huella_integridad(_ds.construir_entrada(self.alerta)))
+        self.assertEqual(r.creada_por, "sella")
+
+    def test_snapshot_mutado_bloquea_guardar_confirmar_y_aprobar(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        self.cand.refresh_from_db(); self.assertEqual(self.cand.estado, "LISTO_PARA_REVISION")
+        self._mutar_snapshot()
+        _, e1 = _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1)
+        _, e2 = _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        _, e3 = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        for e in (e1, e2, e3):
+            self.assertTrue(e and "cambió" in e[0], e)
+        self.cand.refresh_from_db(); self.assertEqual(self.cand.estado, "LISTO_PARA_REVISION")
+
+    def test_confirmar_sella_salida_y_aprobar_registra_huellas(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        self.cand.refresh_from_db()
+        conf = ConfirmacionBorrador.objects.get(candidato=self.cand)
+        self.assertEqual(conf.salida_sha256, _sellos.huella_integridad(self.cand.salida_objetivo_editada))
+        self.assertEqual(conf.entrada_revisada, EntradaRevisada.objects.get(candidato=self.cand))
+        cand, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertEqual(err, []); self.assertEqual(cand.estado, "APROBADO")
+        rc = RevisionCandidato.objects.get(candidato=self.cand)
+        self.assertEqual(rc.entrada_sha256, conf.entrada_revisada.entrada_sha256)
+        self.assertEqual(rc.salida_sha256, conf.salida_sha256)
+        self.assertEqual(rc.serializacion_version, "json_canonico_v1")
+
+    def test_salida_editada_tras_confirmar_bloquea_aprobar(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        self.cand.refresh_from_db()
+        _ds.guardar_borrador(self.cand, dict(_SALIDA_OK, risk="LOW"), self.a1, confirmado=True)
+        self.cand.refresh_from_db()
+        _, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertTrue(err and "la salida cambió" in err[0], err)
+
+    def test_listo_sin_confirmacion_sellada_no_se_aprueba(self):
+        _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        CandidatoDataset.objects.filter(pk=self.cand.pk).update(estado="LISTO_PARA_REVISION", completado_por=self.a1)
+        self.cand.refresh_from_db()
+        _, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertTrue(err and "confirmación sellada" in err[0], err)
+
+    def test_recongelar_crea_version_enlazada_y_exige_reconfirmar(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        self.cand.refresh_from_db()
+        v1 = EntradaRevisada.objects.get(candidato=self.cand); antes = _m2d(v1)
+        self._mutar_snapshot()
+        _, err = _sellos.recongelar_entrada(self.cand, _ds.construir_entrada(self.alerta), self.alerta.contexto_ia_snapshot,
+                                            self.a1, motivo="", seleccion_version=_ds.ENTRADA_SELECCION_VERSION)
+        self.assertTrue(err)                                            # motivo obligatorio
+        self.alerta.refresh_from_db()
+        v2, err = _sellos.recongelar_entrada(self.cand, _ds.construir_entrada(self.alerta), self.alerta.contexto_ia_snapshot,
+                                             self.a1, motivo="Corrección auditada del snapshot",
+                                             seleccion_version=_ds.ENTRADA_SELECCION_VERSION)
+        self.assertEqual(err, []); self.assertEqual((v2.version, v2.anterior_id), (2, v1.pk))
+        v1.refresh_from_db(); self.assertEqual(_m2d(v1), antes)         # la versión anterior no cambia
+        _, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertTrue(err and "confirmar de nuevo" in err[0], err)
+        _, e = _sellos.recongelar_entrada(self.cand, {}, {}, self.a1, motivo="x", seleccion_version="v", origen="DERIVADA")
+        self.assertTrue(e)                                              # DERIVADA exige transformación
+
+    def test_registros_inmutables(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        r = EntradaRevisada.objects.get(candidato=self.cand); c = ConfirmacionBorrador.objects.get(candidato=self.cand)
+        for obj in (r, c):
+            with self.assertRaises(ValueError):
+                obj.save()
+            with self.assertRaises(ValueError):
+                obj.delete()
+        with self.assertRaises(ValueError):
+            EntradaRevisada.objects.filter(pk=r.pk).update(motivo="x")
+        with self.assertRaises(ValueError):
+            ConfirmacionBorrador.objects.all().delete()
+
+
+class CongelarEntradasComandoTests(TestCase):
+    def setUp(self):
+        self.u = User.objects.create_user("congu", password="p")
+        self.u.perfilusuario.rol = "ADMIN"; self.u.perfilusuario.save()
+
+    def _cand(self, snap):
+        a = _alerta_completed(veredicto_ia="REQUIERE_ATENCION", contexto_ia_snapshot=snap)
+        registrar_revision(a, accion="CORREGIDA", motivo_categoria="mantenimiento_programado",
+                           autor=self.u, veredicto_gt="FALSO_POSITIVO")
+        return _cand_de(a)
+
+    def _correr(self, *args, **env):
+        out = StringIO()
+        with mock.patch.dict(os.environ, env):
+            call_command("congelar_entradas", *args, stdout=out)
+        return out.getvalue()
+
+    def test_clasificacion_por_regla_y_dry_run_sin_escrituras(self):
+        borrador = self._cand(_SNAPSHOTS_GOLDEN["1.3"])
+        CandidatoDataset.objects.filter(pk=borrador.pk).update(salida_objetivo_editada={"verdict": "FALSO_POSITIVO"})
+        legado = self._cand(_SNAPSHOTS_GOLDEN["1.0"])
+        CandidatoDataset.objects.filter(pk=legado.pk).update(
+            estado="APROBADO", diagnostico={}, fingerprint=_sellos.huella_legado(_SNAPSHOTS_GOLDEN["1.0"]))
+        roto = self._cand(_SNAPSHOTS_GOLDEN["1.1"])
+        CandidatoDataset.objects.filter(pk=roto.pk).update(estado="APROBADO", diagnostico={}, fingerprint="0" * 64)
+        sin = self._cand(_SNAPSHOTS_GOLDEN["1.2"])
+        antes = [_m2d(c) for c in CandidatoDataset.objects.order_by("pk")]
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "dry.json")
+            self._correr("--log", log)
+            filas = {f["alerta"]: f for f in json.load(open(log))["detalle"]}
+            with self.assertRaises(Exception):
+                self._correr("--log", log)                       # nunca sobrescribe un log
+        self.assertEqual(filas[borrador.alerta_id]["origen"], "SNAPSHOT_CONSERVADO")
+        self.assertEqual(filas[legado.alerta_id]["origen"], "HUELLA_LEGADO_VERIFICADA")
+        self.assertEqual(filas[roto.alerta_id]["origen"], "NO_VERIFICABLE")
+        self.assertEqual(filas[sin.alerta_id]["resultado"], "SIN_BORRADOR")
+        self.assertEqual(EntradaRevisada.objects.count(), 0)
+        self.assertEqual([_m2d(c) for c in CandidatoDataset.objects.order_by("pk")], antes)
+
+    def test_escritura_autorizada_no_toca_candidatos_y_es_idempotente(self):
+        legado = self._cand(_SNAPSHOTS_GOLDEN["1.0"])
+        CandidatoDataset.objects.filter(pk=legado.pk).update(
+            estado="APROBADO", diagnostico={}, fingerprint=_sellos.huella_legado(_SNAPSHOTS_GOLDEN["1.0"]))
+        antes = _m2d(CandidatoDataset.objects.get(pk=legado.pk))
+        with self.assertRaises(Exception):
+            self._correr("--escribir", "--autor", "congu")       # sin autorización
+        self._correr("--escribir", "--autor", "congu", SENTRIA_CONGELAR_AUTORIZADO="1")
+        r = EntradaRevisada.objects.get(candidato_id=legado.pk)
+        self.assertEqual((r.origen, r.seleccion_version, r.algoritmo_verificacion),
+                         ("HUELLA_LEGADO_VERIFICADA", "lista_blanca_v1", "completa_027c1e9"))
+        self.assertEqual(r.creada_por, "congu")                    # quien congela, no quien aprobó
+        self.assertIn("no se le atribuye la revisión ni la aprobación", r.motivo)
+        self.assertIn("No prueba el contenido exacto", r.limitaciones)
+        self.assertIn("La salida no tiene huella", r.limitaciones)
+        self.assertEqual(_m2d(CandidatoDataset.objects.get(pk=legado.pk)), antes)
+        out = self._correr("--escribir", "--autor", "congu", SENTRIA_CONGELAR_AUTORIZADO="1")
+        self.assertIn("YA_CONGELADA", out)
+        self.assertEqual(EntradaRevisada.objects.count(), 1)
+
+
+class SellosRevisionFinalTests(TestCase):
+    """Puntos de la revisión final antes de publicar los sellos."""
+    def setUp(self):
+        self.a1 = User.objects.create_user("srfa", password="p")
+        self.a2 = User.objects.create_user("srfb", password="p")
+        self.alerta = _alerta_completed(veredicto_ia="REQUIERE_ATENCION")
+        registrar_revision(self.alerta, accion="CORREGIDA", motivo_categoria="mantenimiento_programado",
+                           autor=self.a1, veredicto_gt="FALSO_POSITIVO")
+        self.cand = _cand_de(self.alerta)
+
+    def test_editar_y_recuperar_el_mismo_texto_invalida_la_confirmacion(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        _ds.guardar_borrador(self.cand, dict(_SALIDA_OK, risk="LOW"), self.a1, confirmado=True)
+        _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1, confirmado=True)      # mismo texto que el confirmado
+        self.cand.refresh_from_db()
+        conf = _sellos.ultima_confirmacion(self.cand)
+        self.assertEqual(conf.salida_sha256, _sellos.huella_integridad(self.cand.salida_objetivo_editada))
+        _, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertTrue(err and "confirmar de nuevo" in err[0], err)
+        vers = list(EntradaRevisada.objects.filter(candidato=self.cand).values_list("version", "anterior__version"))
+        self.assertEqual(vers, [(1, None), (2, 1)])                                  # historial conservado
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)       # reconfirmar
+        cand, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertEqual((err, cand.estado), ([], "APROBADO"))
+
+    def test_recongelar_no_sustituye_la_entrada_de_un_aprobado(self):
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        antes = list(EntradaRevisada.objects.filter(candidato=self.cand).values())
+        reg, err = _sellos.recongelar_entrada(self.cand, {"x": 1}, {"x": 1}, self.a1, motivo="intento",
+                                              seleccion_version=_ds.ENTRADA_SELECCION_VERSION)
+        self.assertIsNone(reg); self.assertTrue(err and "APROBADO" in err[0])
+        self.assertEqual(list(EntradaRevisada.objects.filter(candidato=self.cand).values()), antes)
+
+    def test_historico_no_pasa_por_revisado_hasta_revisarlo_en_el_editor(self):
+        ent, snap = _ds.construir_entrada(self.alerta), self.alerta.contexto_ia_snapshot
+        EntradaRevisada.objects.create(
+            candidato=self.cand, version=1, origen="SNAPSHOT_CONSERVADO", entrada=ent,
+            entrada_sha256=_sellos.huella_integridad(ent), snapshot_sha256=_sellos.huella_integridad(snap),
+            serializacion_version=_sellos.SERIALIZACION_VERSION, seleccion_version=_ds.ENTRADA_SELECCION_VERSION,
+            limitaciones=_sellos.LIMITACION_SNAPSHOT_CONSERVADO, creada_por="operador")
+        _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        v1, v2 = EntradaRevisada.objects.filter(candidato=self.cand).order_by("version")
+        self.assertEqual((v1.origen, v2.origen, v2.anterior_id, v2.creada_por),
+                         ("SNAPSHOT_CONSERVADO", "ENTRADA_REVISADA", v1.pk, "srfa"))
+        self.assertIn("entrada histórica v1", v2.motivo)
+        self.assertEqual(_sellos.ultima_confirmacion(self.cand).entrada_revisada, v2)
+        self.assertIn("no demuestra que sea exactamente la entrada revisada", v1.limitaciones)
+
+    def test_confirmacion_ligada_a_historico_no_permite_aprobar(self):
+        ent, snap = _ds.construir_entrada(self.alerta), self.alerta.contexto_ia_snapshot
+        _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+        CandidatoDataset.objects.filter(pk=self.cand.pk).update(estado="LISTO_PARA_REVISION", completado_por=self.a1)
+        reg = _sellos.recongelar_entrada(self.cand, ent, snap, self.a1, motivo="m", origen="SNAPSHOT_CONSERVADO",
+                                         seleccion_version=_ds.ENTRADA_SELECCION_VERSION)[0]
+        self.cand.refresh_from_db()
+        _sellos.sellar_confirmacion(self.cand, reg, self.cand.salida_objetivo_editada, self.a1)
+        _, err = _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertTrue(err and "no corresponde a una entrada revisada" in err[0], err)
+
+    def test_operaciones_bloquean_la_fila_dentro_de_la_transaccion(self):
+        from django.db import connection as _cx
+        from django.db.models.query import QuerySet
+        original, llamadas = QuerySet.select_for_update, []
+        def espia(qs, *a, **k):
+            llamadas.append((qs.model.__name__, _cx.in_atomic_block))
+            return original(qs, *a, **k)
+        with mock.patch.object(QuerySet, "select_for_update", espia):
+            _ds.guardar_borrador(self.cand, _SALIDA_OK, self.a1)
+            _ds.enviar_a_revision(self.cand, _SALIDA_OK, self.a1, confirmado=True)
+            _ds.revisar_candidato(self.cand, decision="APROBADO", autor=self.a2)
+        self.assertEqual([m for m, _ in llamadas].count("CandidatoDataset"), 3)
+        self.assertTrue(all(dentro for _, dentro in llamadas))
+
+    def test_comando_rechaza_autor_no_admin(self):
+        with mock.patch.dict(os.environ, {"SENTRIA_CONGELAR_AUTORIZADO": "1"}):
+            with self.assertRaises(Exception):
+                call_command("congelar_entradas", "--escribir", "--autor", "srfa", stdout=StringIO())
+        self.assertEqual(EntradaRevisada.objects.count(), 0)

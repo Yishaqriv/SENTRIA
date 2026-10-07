@@ -29,12 +29,19 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from . import sellos
 from .ia.contrato import CVSS_ENUMS, CVSS_CLAVES, RIESGOS as CONTRATO_RIESGOS, validar_salida_ia
 from .models import Alert, CandidatoDataset, RevisionCandidato
 
 _ESTADOS_HUMANOS = ("LISTO_PARA_REVISION", "DEVUELTO", "APROBADO")
 
 # --- Entrada: SÓLO estas claves de la capa E llegan al candidato ---
+# Versión de esta lista blanca (se guarda en cada entrada congelada). Cualquier
+# cambio de `_CLAVES_ENTRADA` exige una versión nueva: las entradas congeladas no
+# se recalculan, y la verificación detecta la diferencia.
+#   lista_blanca_v1: 16 claves (027c1e9 … antes de feb219b) = sellos.LEGADO_CLAVES
+#   lista_blanca_v2: + maintenance_scope, maintenance_scope_match (feb219b, entrada 1.3)
+ENTRADA_SELECCION_VERSION = "lista_blanca_v2"
 _CLAVES_ENTRADA = (
     "schema_version", "alert_description_es", "wazuh_level", "wazuh_rule_groups",
     "wazuh_rule_id", "asset_type", "asset_criticality", "asset_os_family",
@@ -524,6 +531,18 @@ def guardar_borrador(cand, datos, autor, *, confirmado=False):
     if not ok_priv:
         return cand, [f"no se guarda: privacidad ({', '.join(hallazgos + fugas)})"]
     with transaction.atomic():
+        # Fila bloqueada: la comprobación de los sellos y la escritura no se intercalan
+        # con otra operación sobre el mismo candidato.
+        cand = CandidatoDataset.objects.select_for_update().select_related("alerta").get(pk=cand.pk)
+        if cand.estado == "APROBADO":
+            return cand, ["este candidato ya está APROBADO: la salida supervisada es inmutable"]
+        # Sello: la entrada que ve quien revisa se congela con el primer borrador;
+        # si después cambia, no se guarda nada hasta volver a congelarla explícitamente.
+        _reg, errores = sellos.asegurar_entrada_revisada(
+            cand, construir_entrada(cand.alerta), _snapshot(cand.alerta), autor,
+            seleccion_version=ENTRADA_SELECCION_VERSION)
+        if errores:
+            return cand, errores
         cand.salida_objetivo_editada = _contrato_dict(salida)
         cand.salida_objetivo_revisada = bool(confirmado)
         cand.save(update_fields=["salida_objetivo_editada", "salida_objetivo_revisada", "sincronizado_en"])
@@ -549,6 +568,14 @@ def enviar_a_revision(cand, datos, autor, *, confirmado):
         return cand, [f"no se guarda: privacidad ({', '.join(hallazgos + fugas)})"]
 
     with transaction.atomic():
+        cand = CandidatoDataset.objects.select_for_update().select_related("alerta").get(pk=cand.pk)
+        if cand.estado == "APROBADO":
+            return cand, ["este candidato ya está APROBADO: es inmutable y no vuelve a revisión"]
+        reg, errores = sellos.asegurar_entrada_revisada(
+            cand, construir_entrada(cand.alerta), _snapshot(cand.alerta), autor,
+            seleccion_version=ENTRADA_SELECCION_VERSION)
+        if errores:
+            return cand, errores
         cand.salida_objetivo_editada = _contrato_dict(salida)
         cand.salida_objetivo_revisada = bool(confirmado)
         cand.save(update_fields=["salida_objetivo_editada", "salida_objetivo_revisada", "sincronizado_en"])
@@ -560,6 +587,8 @@ def enviar_a_revision(cand, datos, autor, *, confirmado):
         cand.completado_por = autor if getattr(autor, "pk", None) else None
         cand.completado_en = timezone.now()
         cand.save(update_fields=["estado", "completado_por", "completado_en", "sincronizado_en"])
+        # Sello de la confirmación: la salida confirmada, enlazada con la entrada revisada vigente.
+        sellos.sellar_confirmacion(cand, reg, cand.salida_objetivo_editada, autor)
     sincronizar_candidato(a)
     cand.refresh_from_db()
     return cand, []
@@ -578,28 +607,39 @@ def revisar_candidato(cand, *, decision, autor, observaciones=""):
     """
     if decision not in dict(RevisionCandidato.DECISION_CHOICES):
         return cand, [f"decisión inválida: {decision!r}"]
-    if cand.estado == "APROBADO":
-        if decision != "EXCLUIDO":
-            return cand, ["un candidato APROBADO es inmutable: sólo admite una exclusión explícita y auditada"]
-    elif cand.estado not in ("LISTO_PARA_REVISION", "DEVUELTO"):
-        return cand, ["el candidato no está listo para una segunda revisión"]
     autor_pk = getattr(autor, "pk", None)
-    if decision == "APROBADO" and cand.completado_por_id and autor_pk == cand.completado_por_id:
-        return cand, ["quien completó el borrador no puede aprobarlo: hace falta un segundo revisor"]
     if decision in ("DEVUELTO", "EXCLUIDO") and not (observaciones or "").strip():
         return cand, ["hace falta una observación para devolver o excluir"]
 
-    if decision == "APROBADO":
-        salida = salida_objetivo_actual(cand)
-        ok, errores = validar_para_revision(cand, salida)
-        if not ok:
-            return cand, ["no se puede aprobar: " + "; ".join(errores)]
-
     with transaction.atomic():
+        # Fila bloqueada: estado, sellos y registro de la decisión se comprueban y
+        # escriben sin que otra operación sobre el candidato se intercale.
+        cand = CandidatoDataset.objects.select_for_update().select_related("alerta").get(pk=cand.pk)
+        if cand.estado == "APROBADO":
+            if decision != "EXCLUIDO":
+                return cand, ["un candidato APROBADO es inmutable: sólo admite una exclusión explícita y auditada"]
+        elif cand.estado not in ("LISTO_PARA_REVISION", "DEVUELTO"):
+            return cand, ["el candidato no está listo para una segunda revisión"]
+        if decision == "APROBADO" and cand.completado_por_id and autor_pk == cand.completado_por_id:
+            return cand, ["quien completó el borrador no puede aprobarlo: hace falta un segundo revisor"]
+
+        entrada, snap, salida = construir_entrada(cand.alerta), _snapshot(cand.alerta), salida_objetivo_actual(cand)
+        if decision == "APROBADO":
+            ok, errores = validar_para_revision(cand, salida)
+            if not ok:
+                return cand, ["no se puede aprobar: " + "; ".join(errores)]
+            # La entrada y la salida deben ser exactamente las confirmadas.
+            errores = sellos.verificar_para_aprobar(cand, entrada, snap, salida)
+            if errores:
+                return cand, ["no se puede aprobar: " + "; ".join(errores)]
+
         RevisionCandidato.objects.create(
             candidato=cand, decision=decision,
             autor=autor if autor_pk else None,
             observaciones=(observaciones or "").strip(),
+            entrada_sha256=sellos.huella_integridad(entrada) if entrada else "",
+            salida_sha256=sellos.huella_integridad(salida),
+            serializacion_version=sellos.SERIALIZACION_VERSION,
         )
         if decision == "APROBADO":
             cand.estado = "APROBADO"

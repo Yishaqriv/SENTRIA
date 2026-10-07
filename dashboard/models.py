@@ -519,6 +519,11 @@ class RevisionCandidato(models.Model):
         related_name="revisiones_candidato",
     )
     observaciones = models.TextField(blank=True, default="")
+    # Huellas de integridad (`sellos.huella_integridad`) de la entrada y la salida
+    # en el momento de la decisión. Vacías en revisiones anteriores a los sellos.
+    entrada_sha256 = models.CharField(max_length=64, blank=True, default="")
+    salida_sha256 = models.CharField(max_length=64, blank=True, default="")
+    serializacion_version = models.CharField(max_length=32, blank=True, default="")
     creada_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -526,3 +531,92 @@ class RevisionCandidato(models.Model):
 
     def __str__(self):
         return f"Revisión {self.decision} de {self.candidato.ejemplo_id}"
+
+
+class _SoloInsercionQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        raise ValueError("registro inmutable: no se puede actualizar")
+
+    def delete(self):
+        raise ValueError("registro inmutable: no se puede borrar")
+
+
+class _RegistroInmutable(models.Model):
+    """Base append-only: se inserta una vez y nunca se actualiza ni se borra."""
+    objects = _SoloInsercionQuerySet.as_manager()
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("registro inmutable: no se puede actualizar")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("registro inmutable: no se puede borrar")
+
+
+class EntradaRevisada(_RegistroInmutable):
+    """
+    Entrada de un candidato CONGELADA (append-only, ver `dashboard/sellos.py`).
+    Cada re-congelación crea otra versión enlazada con la anterior; ninguna se
+    sobrescribe. `origen` distingue lo verificado de lo conservado o derivado.
+    """
+    ORIGEN_CHOICES = [
+        ("ENTRADA_REVISADA", "Entrada revisada: congelada al guardar el borrador"),
+        ("SNAPSHOT_CONSERVADO", "Histórico: snapshot conservado; solo coincide la huella semántica"),
+        ("HUELLA_LEGADO_VERIFICADA", "Histórico: coincide una huella completa de un algoritmo anterior"),
+        ("DERIVADA", "Derivada por una transformación explícita (no es la original)"),
+        ("NO_VERIFICABLE", "No verificable"),
+    ]
+    candidato = models.ForeignKey(
+        "CandidatoDataset", on_delete=models.PROTECT, related_name="entradas_revisadas"
+    )
+    version = models.PositiveIntegerField()
+    anterior = models.OneToOneField(
+        "self", null=True, blank=True, on_delete=models.PROTECT, related_name="siguiente"
+    )
+    origen = models.CharField(max_length=32, choices=ORIGEN_CHOICES)
+    entrada = models.JSONField()
+    entrada_sha256 = models.CharField(max_length=64)
+    snapshot_sha256 = models.CharField(max_length=64)
+    serializacion_version = models.CharField(max_length=32)
+    seleccion_version = models.CharField(max_length=32)
+    algoritmo_verificacion = models.CharField(max_length=40, blank=True, default="")
+    transformacion_id = models.CharField(max_length=60, blank=True, default="")
+    motivo = models.TextField(blank=True, default="")
+    limitaciones = models.TextField(blank=True, default="")
+    # Texto (no FK): un registro inmutable no puede quedar alterado al borrar un usuario.
+    creada_por = models.CharField(max_length=150, blank=True, default="")
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["candidato_id", "version"]
+        constraints = [
+            models.UniqueConstraint(fields=["candidato", "version"], name="entrada_revisada_version_unica"),
+        ]
+
+    def __str__(self):
+        return f"Entrada v{self.version} ({self.origen}) de {self.candidato_id}"
+
+
+class ConfirmacionBorrador(_RegistroInmutable):
+    """Salida confirmada al enviar a revisión, enlazada con la entrada revisada vigente."""
+    candidato = models.ForeignKey(
+        "CandidatoDataset", on_delete=models.PROTECT, related_name="confirmaciones"
+    )
+    entrada_revisada = models.ForeignKey(
+        "EntradaRevisada", on_delete=models.PROTECT, related_name="confirmaciones"
+    )
+    salida = models.JSONField()
+    salida_sha256 = models.CharField(max_length=64)
+    serializacion_version = models.CharField(max_length=32)
+    confirmada_por = models.CharField(max_length=150, blank=True, default="")
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["candidato_id", "creada_en", "id"]
+
+    def __str__(self):
+        return f"Confirmación de {self.candidato_id} ({self.creada_en:%Y-%m-%d %H:%M})"
