@@ -5452,3 +5452,76 @@ class SellosRevisionFinalTests(TestCase):
             with self.assertRaises(Exception):
                 call_command("congelar_entradas", "--escribir", "--autor", "srfa", stdout=StringIO())
         self.assertEqual(EntradaRevisada.objects.count(), 0)
+
+
+class VistasDatasetSoloLecturaTests(TestCase):
+    """Abrir el listado o el detalle del dataset no sincroniza, no guarda ni cambia estados."""
+    def setUp(self):
+        self.an = User.objects.create_user("gro_an", password="p")            # ANALISTA por defecto
+        self.inv = User.objects.create_user("gro_inv", password="p")
+        self.inv.perfilusuario.rol = "INVITADO"; self.inv.perfilusuario.save()
+        self.alerta = _alerta_completed(veredicto_ia="REQUIERE_ATENCION")
+        registrar_revision(self.alerta, accion="CORREGIDA", motivo_categoria="mantenimiento_programado",
+                           autor=self.an, veredicto_gt="FALSO_POSITIVO")
+        self.cand = _cand_de(self.alerta)
+        # Candidato desactualizado a propósito: una sincronización lo cambiaría.
+        CandidatoDataset.objects.filter(pk=self.cand.pk).update(fingerprint="desfasada", diagnostico={"x": 1})
+        self.cand.refresh_from_db()
+
+    def _filas(self):
+        return [(_m2d(c), c.sincronizado_en) for c in CandidatoDataset.objects.order_by("pk")]
+
+    def _escrituras(self, ctx):
+        return [q["sql"] for q in ctx.captured_queries
+                if q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) and "django_session" not in q["sql"]]
+
+    def test_get_listado_y_detalle_no_escriben(self):
+        from django.db import connection as _cx
+        from django.test.utils import CaptureQueriesContext
+        self.client.force_login(self.an)
+        antes = self._filas()
+        with CaptureQueriesContext(_cx) as ctx:
+            r1 = self.client.get(reverse("bandeja_dataset"))
+            r2 = self.client.get(reverse("candidato_detalle", args=[self.cand.ejemplo_id]))
+        self.assertEqual((r1.status_code, r2.status_code), (200, 200))
+        self.assertEqual(self._escrituras(ctx), [])
+        self.assertEqual(self._filas(), antes)
+        self.assertContains(r1, "Sincronizar candidatos")
+
+    def test_get_del_aprobado_no_escribe(self):
+        from django.db import connection as _cx
+        from django.test.utils import CaptureQueriesContext
+        CandidatoDataset.objects.filter(pk=self.cand.pk).update(estado="APROBADO")
+        self.client.force_login(self.an)
+        with CaptureQueriesContext(_cx) as ctx:
+            r = self.client.get(reverse("candidato_detalle", args=[self.cand.ejemplo_id]))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self._escrituras(ctx), [])
+        self.assertNotContains(r, 'value="sincronizar"')
+
+    def test_sincronizar_exige_post_rol_y_csrf(self):
+        url = reverse("sincronizar_dataset")
+        self.client.force_login(self.inv)
+        self.assertIn(self.client.post(url).status_code, (302, 403))       # INVITADO no sincroniza
+        self.client.force_login(self.an)
+        self.assertEqual(self.client.get(url).status_code, 302)             # GET no sincroniza
+        cli = _Client(enforce_csrf_checks=True); cli.force_login(self.an)
+        self.assertEqual(cli.post(url).status_code, 403)                     # sin CSRF
+        self.cand.refresh_from_db()
+        self.assertEqual((self.cand.fingerprint, self.cand.diagnostico), ("desfasada", {"x": 1}))
+        r = self.client.post(url)                                             # POST válido
+        self.assertEqual(r.status_code, 302)
+        self.cand.refresh_from_db()
+        self.assertEqual(self.cand.fingerprint, _ds.fingerprint_entrada(_ds.construir_entrada(self.alerta)))
+
+    def test_sincronizar_un_candidato_por_post_y_flujo_intacto(self):
+        self.client.force_login(self.an)
+        url = reverse("candidato_detalle", args=[self.cand.ejemplo_id])
+        self.client.post(url, {"accion": "sincronizar"})
+        self.cand.refresh_from_db()
+        self.assertNotEqual(self.cand.fingerprint, "desfasada")
+        data = {"accion": "borrador"}; data.update(_SALIDA_OK)
+        self.client.post(url, data)
+        self.cand.refresh_from_db()
+        self.assertIsNotNone(self.cand.salida_objetivo_editada)
+        self.assertEqual(EntradaRevisada.objects.filter(candidato=self.cand).count(), 1)

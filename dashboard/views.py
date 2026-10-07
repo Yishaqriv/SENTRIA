@@ -701,12 +701,11 @@ def metricas(request):
 @requiere_rol('ADMIN', 'ANALISTA')
 def bandeja_dataset(request):
     """
-    Bandeja del dataset de entrenamiento. Detecta automáticamente las alertas con
-    revisión humana y construye/actualiza sus candidatos desde
-    `contexto_ia_snapshot` + evidencia segura ya congelada. No se copian alertas
-    a mano. No genera JSONL definitivo ni sube nada.
+    Bandeja del dataset de entrenamiento: SOLO LECTURA. Muestra los candidatos tal
+    como están; abrirla no sincroniza, no guarda ni cambia estados. La
+    sincronización es una acción explícita (`sincronizar_dataset`, POST + CSRF).
+    No genera JSONL definitivo ni sube nada.
     """
-    sincronizar_todos()
     filas = vista_bandeja()
     resumen = {
         'total': len(filas),
@@ -721,6 +720,20 @@ def bandeja_dataset(request):
     return render(request, 'dashboard/bandeja_dataset.html', {
         'filas': filas, 'resumen': resumen,
     })
+
+
+@requiere_rol('ADMIN', 'ANALISTA')
+def sincronizar_dataset(request):
+    """
+    Acción EXPLÍCITA (POST + CSRF + ADMIN/ANALISTA): construye o actualiza los
+    candidatos desde las revisiones humanas y sus snapshots congelados. Nunca
+    toca candidatos APROBADO ni los sellos de entrada/salida.
+    """
+    if request.method != 'POST':
+        return redirect('bandeja_dataset')
+    n = sincronizar_todos()
+    messages.success(request, f"Candidatos sincronizados: {n}.")
+    return redirect('bandeja_dataset')
 
 
 @requiere_rol('ADMIN', 'ANALISTA')
@@ -764,13 +777,15 @@ def candidato_detalle(request, ejemplo_id):
     """
     Editor y doble revisión de un candidato del dataset.
 
-    GET: 3 bloques — entrada anonimizada (solo lectura), respuesta original de
-    Gemini (solo lectura, nunca modificable), salida objetivo supervisada
-    (formulario editable, verdict bloqueado a la verdad de terreno).
+    GET (SOLO LECTURA: no sincroniza, no guarda ni cambia estados): 3 bloques —
+    entrada anonimizada, respuesta original de Gemini (nunca modificable) y
+    salida objetivo supervisada (formulario editable, verdict bloqueado a la
+    verdad de terreno).
 
     POST (`accion`): `borrador` (guardar) · `enviar` (validar y pasar a
-    LISTO_PARA_REVISION) · `revisar` (2º revisor: aprobar / devolver / excluir).
-    POST + CSRF + ADMIN/ANALISTA (decorador).
+    LISTO_PARA_REVISION) · `revisar` (2º revisor: aprobar / devolver / excluir)
+    · `sincronizar` (actualizar el diagnóstico del candidato). Cada POST
+    sincroniza antes de actuar. POST + CSRF + ADMIN/ANALISTA (decorador).
     """
     cand = get_object_or_404(
         CandidatoDataset.objects.select_related('alerta', 'alerta__revision_humana',
@@ -778,14 +793,16 @@ def candidato_detalle(request, ejemplo_id):
         ejemplo_id=ejemplo_id,
     )
     alerta = cand.alerta
-    ds.sincronizar_candidato(alerta)
-    cand.refresh_from_db()
 
     if request.method == 'POST':
+        ds.sincronizar_candidato(alerta)
+        cand.refresh_from_db()
         accion = request.POST.get('accion', '')
         confirmado = request.POST.get('confirmo_revision') in ('on', 'true', '1')
 
-        if accion == 'borrador':
+        if accion == 'sincronizar':
+            messages.success(request, "Candidato sincronizado.")
+        elif accion == 'borrador':
             cand, errores = ds.guardar_borrador(cand, request.POST, request.user, confirmado=confirmado)
             _flash_errores(request, errores, "Borrador guardado.")
         elif accion == 'enviar':

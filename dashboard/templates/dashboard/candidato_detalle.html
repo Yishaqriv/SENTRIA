@@ -53,7 +53,16 @@
     <h1>SENTRIA — Candidato <code>{{ cand.ejemplo_id }}</code>
         <span class="pill st-{{ cand.estado }}">{{ cand.get_estado_display }}</span>
         {% if cand.estado == 'APROBADO' %}<span class="pill st-APROBADO">🔒 Dataset aprobado</span>{% endif %}</h1>
-    <a href="{% url 'bandeja_dataset' %}" class="btn-back">← Volver a la bandeja</a>
+    <div style="display:flex; gap:10px;">
+        {% if cand.estado != 'APROBADO' %}
+        <form method="post" style="margin:0;">
+            {% csrf_token %}
+            <button type="submit" name="accion" value="sincronizar" class="btn-back" style="cursor:pointer; font-family:inherit;"
+                    title="Recalcula el diagnóstico del candidato. Abrir esta página no modifica nada.">↻ Sincronizar</button>
+        </form>
+        {% endif %}
+        <a href="{% url 'bandeja_dataset' %}" class="btn-back">← Volver a la bandeja</a>
+    </div>
 </div>
 
 <div class="wrap">

@@ -43,6 +43,10 @@
 <div class="header">
     <h1>SENTRIA — Dataset de entrenamiento</h1>
     <div style="display:flex; gap:10px;">
+        <form method="post" action="{% url 'sincronizar_dataset' %}" style="margin:0;">
+            {% csrf_token %}
+            <button type="submit" class="btn-back" style="cursor:pointer; font-family:inherit;" title="Actualiza los candidatos desde las revisiones humanas. Abrir esta página no modifica nada.">↻ Sincronizar candidatos</button>
+        </form>
         <a href="{% url 'planificador_dataset' %}" class="btn-back">📐 Planificador (dry-run)</a>
         <a href="{% url 'index' %}" class="btn-back">← Volver al dashboard</a>
     </div>
@@ -50,9 +54,11 @@
 
 <div class="wrap">
     <div class="card">
+        {% if messages %}{% for m in messages %}<p class="sub"><b>{{ m }}</b></p>{% endfor %}{% endif %}
         <h2>Bandeja de candidatos supervisados</h2>
         <p class="sub">
-            Se detectan automáticamente las alertas con revisión de analista. La entrada se construye desde
+            Los candidatos se crean al registrar la revisión de analista y se actualizan con
+            <b>Sincronizar candidatos</b>; abrir esta página no modifica nada. La entrada se construye desde
             <code>contexto_ia_snapshot</code> + la evidencia segura ya congelada; la salida objetivo parte de
             la respuesta de la IA con el veredicto sustituido por la verdad de terreno. Nada se copia a mano.
             <b>No se genera JSONL definitivo ni se sube ningún archivo.</b>

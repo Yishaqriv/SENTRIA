@@ -21,6 +21,7 @@ urlpatterns = [
     path('mantenimiento/<int:ventana_id>/cancelar/', views.mantenimiento_cancelar, name='mantenimiento_cancelar'),
     path('metricas/',                 views.metricas,       name='metricas'),
     path('dataset/',                  views.bandeja_dataset, name='bandeja_dataset'),
+    path('dataset/sincronizar/',      views.sincronizar_dataset, name='sincronizar_dataset'),
     path('dataset/planificador/',     views.planificador_dataset, name='planificador_dataset'),
     path('dataset/<str:ejemplo_id>/', views.candidato_detalle, name='candidato_detalle'),
     path('reclasificar_pendientes',   views.reclasificar_pendientes, name='reclasificar_pendientes'),
