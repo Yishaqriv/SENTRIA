@@ -5525,3 +5525,180 @@ class VistasDatasetSoloLecturaTests(TestCase):
         self.cand.refresh_from_db()
         self.assertIsNotNone(self.cand.salida_objetivo_editada)
         self.assertEqual(EntradaRevisada.objects.filter(candidato=self.cand).count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Revisión consolidada por lote (modo REVISOR_UNICO_LOTE)
+# ---------------------------------------------------------------------------
+from dashboard import lotes as _lotes
+from dashboard.models import AceptacionLote, AceptacionLoteItem
+
+_LISTA_OK = {k: True for k in _lotes.CLAVES_LISTA}
+_LOTE = override_settings(SENTRIA_MODO_REVISION="REVISOR_UNICO_LOTE")
+
+
+class LoteBase(TestCase):
+    def setUp(self):
+        self.resp = User.objects.create_user("lote_resp", password="p")
+        self.resp.perfilusuario.rol = "ADMIN"; self.resp.perfilusuario.save()
+        self.otro = User.objects.create_user("lote_otro", password="p")
+        self.otro.perfilusuario.rol = "ADMIN"; self.otro.perfilusuario.save()
+        self.cands = [self._cand(n) for n in range(3)]
+
+    def _cand(self, n, confirmar=True, autor=None):
+        snap = dict(_SNAP_SEGURO, alert_description_es=f"Se eliminó un archivo de texto vacío (caso de lote {n}).")
+        a = _alerta_completed(veredicto_ia="REQUIERE_ATENCION", contexto_ia_snapshot=snap)
+        registrar_revision(a, accion="CORREGIDA", motivo_categoria="mantenimiento_programado",
+                           autor=self.resp, veredicto_gt="FALSO_POSITIVO")
+        c = _cand_de(a)
+        if confirmar:
+            c, err = _ds.enviar_a_revision(c, _SALIDA_OK, autor or self.resp, confirmado=True)
+            assert err == [], err
+        return c
+
+    def _manifiesto(self, cands=None):
+        return _lotes.preparar_manifiesto([c.ejemplo_id for c in (cands or self.cands)])
+
+    def _aceptar(self, m, autor=None, lista=None, decl=_lotes.DECLARACION):
+        return _lotes.aceptar_lote(m, autor or self.resp, lista or dict(_LISTA_OK), "REVISION_GUIADA_39 (prueba)", decl)
+
+    def _sin_cambios(self, cands):
+        for c in cands:
+            c.refresh_from_db()
+            self.assertEqual(c.estado, "LISTO_PARA_REVISION")
+        self.assertEqual(AceptacionLote.objects.count(), 0)
+        self.assertEqual(AceptacionLoteItem.objects.count(), 0)
+        self.assertFalse(RevisionCandidato.objects.filter(decision="APROBADO").exists())
+
+
+class LoteModoDobleTests(LoteBase):
+    def test_doble_es_el_predeterminado_y_rechaza_el_lote(self):
+        self.assertFalse(_lotes.modo_activo())
+        m = self._manifiesto(); self.assertTrue(m["valido"])
+        lote, err = self._aceptar(m)
+        self.assertIsNone(lote); self.assertTrue(any("no está activo" in e for e in err))
+        self._sin_cambios(self.cands)
+
+    def test_autoaprobacion_caso_a_caso_prohibida_y_registra_doble(self):
+        _, err = _ds.revisar_candidato(self.cands[0], decision="APROBADO", autor=self.resp)
+        self.assertTrue(err and "segundo revisor" in err[0])
+        c, err = _ds.revisar_candidato(self.cands[0], decision="APROBADO", autor=self.otro)
+        self.assertEqual((err, c.estado), ([], "APROBADO"))
+        self.assertEqual(RevisionCandidato.objects.get(candidato=c).modo_revision, "DOBLE")
+
+
+@_LOTE
+class LoteFlujoTests(LoteBase):
+    def test_flujo_permitido_aprueba_todo_y_sella(self):
+        m = self._manifiesto()
+        lote, err = self._aceptar(m)
+        self.assertEqual(err, [])
+        self.assertEqual((lote.responsable, lote.responsable_id, lote.n_casos, lote.declaracion),
+                         ("lote_resp", self.resp.pk, 3, _lotes.DECLARACION))
+        self.assertEqual(lote.manifiesto_sha256, m["manifiesto_sha256"])
+        self.assertEqual(lote.lista_sha256, _sellos.huella_integridad(_LISTA_OK))
+        for c in self.cands:
+            c.refresh_from_db(); self.assertEqual(c.estado, "APROBADO")
+            rc = RevisionCandidato.objects.get(candidato=c)
+            self.assertEqual((rc.modo_revision, rc.aceptacion_lote_id, rc.autor), ("REVISOR_UNICO_LOTE", lote.pk, self.resp))
+            conf = _sellos.ultima_confirmacion(c)
+            self.assertEqual((rc.salida_sha256, rc.entrada_sha256), (conf.salida_sha256, conf.entrada_revisada.entrada_sha256))
+        self.assertEqual(_lotes.verificar_lote(lote), [])
+
+    def test_autoaprobacion_caso_a_caso_sigue_prohibida_en_modo_lote(self):
+        _, err = _ds.revisar_candidato(self.cands[0], decision="APROBADO", autor=self.resp)
+        self.assertTrue(err and "segundo revisor" in err[0])
+
+    def test_permisos_responsable_admin_y_quien_confirmo(self):
+        analista = User.objects.create_user("lote_an", password="p")   # ANALISTA
+        lote, err = self._aceptar(self._manifiesto(), autor=analista)
+        self.assertIsNone(lote); self.assertTrue(any("rol ADMIN" in e for e in err))
+        lote, err = self._aceptar(self._manifiesto(), autor=self.otro)     # ADMIN, pero no confirmó
+        self.assertIsNone(lote); self.assertTrue(err and "lo confirmó otra persona" in err[0])
+        self._sin_cambios(self.cands)
+
+    def test_lista_y_declaracion_exactas(self):
+        m = self._manifiesto()
+        for lista in ({**_LISTA_OK, "ia_no_vinculante": False}, {k: True for k in _lotes.CLAVES_LISTA[:5]}):
+            lote, err = self._aceptar(m, lista=lista); self.assertIsNone(lote)
+        lote, err = self._aceptar(m, decl=_lotes.DECLARACION + " ")
+        self.assertIsNone(lote); self.assertTrue(any("declaración" in e for e in err))
+        self._sin_cambios(self.cands)
+
+    def test_editar_tras_confirmar_invalida_el_manifiesto_aunque_se_recupere_el_texto(self):
+        m = self._manifiesto()
+        _ds.guardar_borrador(self.cands[1], dict(_SALIDA_OK, risk="LOW"), self.resp, confirmado=True)
+        _ds.guardar_borrador(self.cands[1], _SALIDA_OK, self.resp, confirmado=True)
+        lote, err = self._aceptar(m)
+        self.assertIsNone(lote); self.assertTrue(err and "no se aprueba ningún caso" in err[0])
+        self._sin_cambios([self.cands[0], self.cands[2]])
+        self.cands[1].refresh_from_db(); self.assertEqual(self.cands[1].estado, "LISTO_PARA_REVISION")
+        self.assertFalse(self._manifiesto()["valido"])                     # hace falta reconfirmar
+        _ds.enviar_a_revision(self.cands[1], _SALIDA_OK, self.resp, confirmado=True)
+        lote, err = self._aceptar(m)                                        # el manifiesto antiguo sigue inválido
+        self.assertIsNone(lote)
+        m2 = self._manifiesto(); self.assertTrue(m2["valido"])
+        lote, err = self._aceptar(m2)
+        self.assertEqual(err, [])
+
+    def test_manifiesto_alterado_se_rechaza(self):
+        m = self._manifiesto()
+        alterado = json.loads(json.dumps(m)); alterado["items"][0]["salida_sha256"] = "0" * 64
+        self.assertIsNone(self._aceptar(alterado)[0])                       # huella del manifiesto ya no cuadra
+        alterado["manifiesto_sha256"] = _lotes.huella_manifiesto([_lotes._sin_completador(i) for i in alterado["items"]])
+        lote, err = self._aceptar(alterado)                                 # huella recalculada pero no coincide con lo vigente
+        self.assertIsNone(lote); self.assertTrue("no coincide con la confirmación vigente" in err[0])
+        extra = self._cand(9)
+        sustituido = json.loads(json.dumps(m)); sustituido["items"][2] = self._manifiesto([extra])["items"][0]
+        self.assertIsNone(self._aceptar(sustituido)[0])                     # sustitución sin re-sellar
+        self._sin_cambios(self.cands)
+
+    def test_una_discrepancia_rechaza_el_lote_entero(self):
+        pendiente = self._cand(7, confirmar=False)                          # INCOMPLETO, sin confirmación
+        self.assertIn(pendiente.ejemplo_id, self._manifiesto(self.cands + [pendiente])["problemas"])
+        m = self._manifiesto()
+        CandidatoDataset.objects.filter(pk=self.cands[2].pk).update(estado="DEVUELTO")
+        lote, err = self._aceptar(m)
+        self.assertIsNone(lote)
+        for c in self.cands[:2]:
+            c.refresh_from_db(); self.assertEqual(c.estado, "LISTO_PARA_REVISION")
+        self.assertEqual(AceptacionLote.objects.count(), 0)
+
+    def test_inmutabilidad_y_no_se_pueden_anadir_casos(self):
+        lote, err = self._aceptar(self._manifiesto()); self.assertEqual(err, [])
+        with self.assertRaises(ValueError):
+            lote.save()
+        with self.assertRaises(ValueError):
+            AceptacionLote.objects.filter(pk=lote.pk).update(n_casos=99)
+        with self.assertRaises(ValueError):
+            AceptacionLoteItem.objects.all().delete()
+        extra = self._cand(8)
+        conf = _sellos.ultima_confirmacion(extra)
+        with self.assertRaises(ValueError):
+            AceptacionLoteItem(lote=lote, candidato=extra, confirmacion=conf, entrada_revisada=conf.entrada_revisada,
+                               entrada_sha256="x", salida_sha256="y").save()
+        self.assertEqual(_lotes.verificar_lote(lote), [])
+        lote2, err = self._aceptar(self._manifiesto([self.cands[0]]))       # ya aprobado y en un lote
+        self.assertIsNone(lote2)
+
+    def test_comando_preparar_y_dry_run_sin_escrituras(self):
+        pendiente = self._cand(6, confirmar=False)
+        with tempfile.TemporaryDirectory() as d:
+            ej = os.path.join(d, "casos.json"); json.dump([c.ejemplo_id for c in self.cands] + [pendiente.ejemplo_id], open(ej, "w"))
+            man = os.path.join(d, "m.json"); out = StringIO()
+            call_command("aceptar_lote", "--preparar", "--ejemplos", ej, "--manifiesto-salida", man, stdout=out)
+            self.assertIn("válido=False", out.getvalue())
+            self.assertIn("falta la confirmación sellada", out.getvalue())
+            m = json.load(open(man))
+            self.assertIn(pendiente.ejemplo_id, m["problemas"])
+            lista = os.path.join(d, "l.json"); json.dump(_LISTA_OK, open(lista, "w"))
+            ej2 = os.path.join(d, "c2.json"); json.dump([c.ejemplo_id for c in self.cands], open(ej2, "w"))
+            man2 = os.path.join(d, "m2.json")
+            call_command("aceptar_lote", "--preparar", "--ejemplos", ej2, "--manifiesto-salida", man2, stdout=StringIO())
+            out = StringIO()
+            call_command("aceptar_lote", "--manifiesto", man2, "--lista", lista, "--referencia", "r", "--autor", "lote_resp", stdout=out)
+            self.assertIn('"aceptable": true', out.getvalue())
+            with self.assertRaises(Exception):
+                call_command("aceptar_lote", "--manifiesto", man2, "--lista", lista, "--referencia", "r",
+                             "--autor", "lote_resp", "--escribir", stdout=StringIO())   # sin autorización
+        self._sin_cambios(self.cands)

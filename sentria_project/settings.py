@@ -183,5 +183,12 @@ IA_AGENTES_BLOQUEADOS = [
     a.strip() for a in os.environ.get('IA_AGENTES_BLOQUEADOS', '').split(',') if a.strip()
 ]
 
+# Modo de aprobación del dataset (DECISIONES.md, enmienda 2026-10-07).
+#   DOBLE (predeterminado): quien confirma un candidato no puede aprobarlo.
+#   REVISOR_UNICO_LOTE: un único revisor puede aprobar SOLO aceptando un lote
+#   sellado (dashboard/lotes.py); la autoaprobación caso a caso sigue prohibida.
+# Cualquier otro valor equivale a DOBLE. No se activa sin autorización expresa.
+SENTRIA_MODO_REVISION = os.environ.get('SENTRIA_MODO_REVISION', 'DOBLE').strip().upper()
+
 # Overrides opcionales de la política de elegibilidad (dashboard/ia/politica.py).
 # IA_POLITICA = {"nivel_minimo": 7, "grupos_excluidos": [...], ...}

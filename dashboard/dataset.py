@@ -640,6 +640,7 @@ def revisar_candidato(cand, *, decision, autor, observaciones=""):
             entrada_sha256=sellos.huella_integridad(entrada) if entrada else "",
             salida_sha256=sellos.huella_integridad(salida),
             serializacion_version=sellos.SERIALIZACION_VERSION,
+            modo_revision="DOBLE",          # caso a caso siempre es DOBLE: la autoaprobación sigue prohibida
         )
         if decision == "APROBADO":
             cand.estado = "APROBADO"

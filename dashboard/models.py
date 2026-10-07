@@ -524,6 +524,12 @@ class RevisionCandidato(models.Model):
     entrada_sha256 = models.CharField(max_length=64, blank=True, default="")
     salida_sha256 = models.CharField(max_length=64, blank=True, default="")
     serializacion_version = models.CharField(max_length=32, blank=True, default="")
+    # Modo con el que se tomó la decisión y, si fue por lote, la aceptación que la originó.
+    MODO_CHOICES = [("DOBLE", "Doble revisión"), ("REVISOR_UNICO_LOTE", "Revisión consolidada por lote")]
+    modo_revision = models.CharField(max_length=24, choices=MODO_CHOICES, default="DOBLE")
+    aceptacion_lote = models.ForeignKey(
+        "AceptacionLote", null=True, blank=True, on_delete=models.PROTECT, related_name="revisiones"
+    )
     creada_en = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -620,3 +626,51 @@ class ConfirmacionBorrador(_RegistroInmutable):
 
     def __str__(self):
         return f"Confirmación de {self.candidato_id} ({self.creada_en:%Y-%m-%d %H:%M})"
+
+
+class AceptacionLote(_RegistroInmutable):
+    """
+    Aceptación EXPLÍCITA e inmutable de un lote en modo REVISOR_UNICO_LOTE
+    (ver `dashboard/lotes.py`). Identifica al humano responsable, conserva la
+    declaración metodológica y sella la lista resumida y el manifiesto exacto
+    del lote (casos, confirmaciones y huellas).
+    """
+    modo = models.CharField(max_length=24)
+    responsable = models.CharField(max_length=150)          # texto: un registro inmutable no depende de la FK
+    responsable_id = models.PositiveIntegerField()
+    declaracion = models.TextField()
+    lista_comprobacion = models.JSONField()
+    lista_sha256 = models.CharField(max_length=64)
+    referencia_revision = models.TextField()
+    manifiesto_sha256 = models.CharField(max_length=64, unique=True)
+    n_casos = models.PositiveIntegerField()
+    serializacion_version = models.CharField(max_length=32)
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["creada_en", "id"]
+
+    def __str__(self):
+        return f"Lote {self.manifiesto_sha256[:12]} ({self.n_casos} casos, {self.responsable})"
+
+
+class AceptacionLoteItem(_RegistroInmutable):
+    """Caso de un lote aceptado. Solo lo crea `lotes.aceptar_lote`, en la misma transacción que el lote."""
+    lote = models.ForeignKey("AceptacionLote", on_delete=models.PROTECT, related_name="items")
+    candidato = models.ForeignKey("CandidatoDataset", on_delete=models.PROTECT, related_name="items_lote")
+    confirmacion = models.ForeignKey("ConfirmacionBorrador", on_delete=models.PROTECT, related_name="items_lote")
+    entrada_revisada = models.ForeignKey("EntradaRevisada", on_delete=models.PROTECT, related_name="items_lote")
+    entrada_sha256 = models.CharField(max_length=64)
+    salida_sha256 = models.CharField(max_length=64)
+
+    class Meta:
+        ordering = ["lote_id", "id"]
+        constraints = [
+            # Un candidato solo puede aceptarse en un lote, y un lote no repite casos.
+            models.UniqueConstraint(fields=["candidato"], name="lote_item_candidato_unico"),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not getattr(self, "_desde_aceptar_lote", False):
+            raise ValueError("los casos de un lote solo se crean al aceptarlo: no se pueden añadir después")
+        super().save(*args, **kwargs)
