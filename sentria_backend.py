@@ -137,14 +137,16 @@ def _win_crudo(data):
     """Capa P: SIDs, NOMBRES de los atributos informados, formato del evento, valores UAC (hex),
     proveedor y hora original del evento (entrada 1.2). El nombre de usuario NO se propaga (solo si termina en `$`,
     es decir, cuenta de equipo); de los atributos solo se usa si están informados, nunca su valor.
-    Del resto de `eventdata` (aplicación, rutas, mensajes) no se propaga nada."""
+    Entrada 1.4: SOLO en 4719 (subcategoría y acción de auditoría) y 6416 (clase del dispositivo) se añaden esos
+    campos públicos. Del resto de `eventdata` (aplicación, rutas, mensajes, identificadores, descripciones,
+    fabricantes, ubicación) no se propaga nada."""
     win = (data or {}).get("win") or {}
     sysw = win.get("system") or {}
     if not sysw.get("eventID") and not sysw.get("channel"):
         return None
     ed = win.get("eventdata") or {}
     informados = sorted(k for k in _WIN_ATRIBUTOS_CUENTA if str(ed.get(k, "")).strip() not in ("", "-"))
-    return {"event_id": (str(sysw.get("eventID")) if sysw.get("eventID") not in (None, "") else None),
+    crudo = {"event_id": (str(sysw.get("eventID")) if sysw.get("eventID") not in (None, "") else None),
             "channel": sysw.get("channel"), "proveedor": sysw.get("providerName"),
             "system_time": sysw.get("systemTime"),
             "target_sid": ed.get("targetSid"), "subject_sid": ed.get("subjectUserSid"),
@@ -153,6 +155,14 @@ def _win_crudo(data):
             "atributos_informados": informados,
             "formato_atributos": _win_formato_atributos(informados),
             "uac_anterior": ed.get("oldUacValue"), "uac_nuevo": ed.get("newUacValue")}
+    if crudo["event_id"] == "4719":
+        crudo.update({"auditoria_subcategoria_guid": ed.get("subcategoryGuid"),
+                      "auditoria_subcategoria_nombre": ed.get("subcategory"),
+                      "auditoria_cambios": ed.get("auditPolicyChanges"),
+                      "auditoria_cambios_id": ed.get("auditPolicyChangesId")})
+    elif crudo["event_id"] == "6416":
+        crudo.update({"dispositivo_clase": ed.get("className"), "dispositivo_clase_id": ed.get("classId")})
+    return crudo
 
 
 def _normalizar_hit(hit):

@@ -23,6 +23,9 @@ ENTRADA 1.1 (3F.8) — campos OPCIONALES, solo presentes cuando la telemetría l
 ENTRADA 1.2 — campos OPCIONALES solo para eventos Windows de los canales Application/System:
   win_canal, win_proveedor (lista permitida de proveedores integrados de Windows),
   win_proveedor_categoria, win_id_evento
+ENTRADA 1.4 — campos OPCIONALES solo para Security 4719 / 6416:
+  win_auditoria_subcategoria (tabla cerrada de GUID oficiales), win_auditoria_cambio (lista o "no_determinado"),
+  win_dispositivo_clase (clase de instalación pública; HIDClass/USB nunca se traducen a «teclado»)
 Todos son categorías cerradas o identificadores técnicos validados por patrón; nunca
 nombres de usuario/equipo, SIDs, rutas, comandos ni texto libre de la telemetría.
 
@@ -469,6 +472,110 @@ def evidencia_evento_windows(win):
     return {"win_canal": canal, "win_proveedor": nombre, "win_proveedor_categoria": categoria, "win_id_evento": eid}
 
 
+# ---------------------------------------------------------------------------
+# Entrada 1.4 — Security 4719 (política de auditoría) y 6416 (dispositivo externo reconocido)
+# ---------------------------------------------------------------------------
+# Subcategorías de auditoría: GUID oficial (`auditpol /list /subcategory:* /v`) -> (nombre oficial en inglés, categoría).
+_SUFIJO_GUID_AUDITORIA = "-69ae-11d9-bed3-505054503030}"
+_SUBCATEGORIAS_AUDITORIA = {("{0cce92" + h + _SUFIJO_GUID_AUDITORIA): (n, c) for h, n, c in (
+    ("10", "Security State Change", "cambio_estado_seguridad"), ("11", "Security System Extension", "extension_sistema_seguridad"),
+    ("12", "System Integrity", "integridad_sistema"), ("13", "IPsec Driver", "controlador_ipsec"),
+    ("14", "Other System Events", "otros_eventos_sistema"), ("15", "Logon", "inicio_sesion"), ("16", "Logoff", "cierre_sesion"),
+    ("17", "Account Lockout", "bloqueo_cuenta"), ("18", "IPsec Main Mode", "ipsec_modo_principal"),
+    ("19", "IPsec Quick Mode", "ipsec_modo_rapido"), ("1a", "IPsec Extended Mode", "ipsec_modo_extendido"),
+    ("1b", "Special Logon", "inicio_sesion_especial"), ("1c", "Other Logon/Logoff Events", "otros_eventos_sesion"),
+    ("1d", "File System", "sistema_archivos"), ("1e", "Registry", "registro"), ("1f", "Kernel Object", "objeto_kernel"),
+    ("20", "SAM", "sam"), ("21", "Certification Services", "servicios_certificados"),
+    ("22", "Application Generated", "generado_por_aplicacion"), ("23", "Handle Manipulation", "manipulacion_identificadores"),
+    ("24", "File Share", "recurso_compartido"), ("25", "Filtering Platform Packet Drop", "plataforma_filtrado_descarte"),
+    ("26", "Filtering Platform Connection", "plataforma_filtrado_conexion"), ("27", "Other Object Access Events", "otros_accesos_objetos"),
+    ("28", "Sensitive Privilege Use", "uso_privilegios_sensibles"), ("29", "Non Sensitive Privilege Use", "uso_privilegios_no_sensibles"),
+    ("2a", "Other Privilege Use Events", "otros_usos_privilegios"), ("2b", "Process Creation", "creacion_procesos"),
+    ("2c", "Process Termination", "fin_procesos"), ("2d", "DPAPI Activity", "actividad_dpapi"), ("2e", "RPC Events", "eventos_rpc"),
+    ("2f", "Audit Policy Change", "cambio_politica_auditoria"), ("30", "Authentication Policy Change", "cambio_politica_autenticacion"),
+    ("31", "Authorization Policy Change", "cambio_politica_autorizacion"),
+    ("32", "MPSSVC Rule-Level Policy Change", "cambio_reglas_cortafuegos"),
+    ("33", "Filtering Platform Policy Change", "cambio_politica_filtrado"), ("34", "Other Policy Change Events", "otros_cambios_politica"),
+    ("35", "User Account Management", "gestion_cuentas_usuario"), ("36", "Computer Account Management", "gestion_cuentas_equipo"),
+    ("37", "Security Group Management", "gestion_grupos_seguridad"), ("38", "Distribution Group Management", "gestion_grupos_distribucion"),
+    ("39", "Application Group Management", "gestion_grupos_aplicacion"),
+    ("3a", "Other Account Management Events", "otros_eventos_gestion_cuentas"), ("3b", "Directory Service Access", "acceso_servicio_directorio"),
+    ("3c", "Directory Service Changes", "cambios_servicio_directorio"), ("3d", "Directory Service Replication", "replicacion_servicio_directorio"),
+    ("3e", "Detailed Directory Service Replication", "replicacion_detallada_directorio"), ("3f", "Credential Validation", "validacion_credenciales"),
+    ("40", "Kerberos Service Ticket Operations", "operaciones_tickets_kerberos"), ("41", "Other Account Logon Events", "otros_inicios_cuenta"),
+    ("42", "Kerberos Authentication Service", "servicio_autenticacion_kerberos"), ("43", "Network Policy Server", "servidor_directivas_red"),
+    ("44", "Detailed File Share", "recurso_compartido_detallado"), ("45", "Removable Storage", "almacenamiento_extraible"),
+    ("46", "Central Policy Staging", "preparacion_politica_central"), ("47", "User / Device Claims", "notificaciones_usuario_dispositivo"),
+    ("48", "Plug and Play Events", "plug_and_play"), ("49", "Group Membership", "pertenencia_grupos"),
+)}
+# AuditPolicyChanges: códigos del archivo de parámetros del proveedor (msobjs.dll, verificados en LAPTOP-01) y su texto oficial.
+_CAMBIOS_AUDITORIA_CODIGO = {"%%8448": "exito_eliminado", "%%8449": "exito_anadido", "%%8450": "fallo_eliminado", "%%8451": "fallo_anadido"}
+_CAMBIOS_AUDITORIA_TEXTO = {"success removed": "exito_eliminado", "success added": "exito_anadido",
+                            "failure removed": "fallo_eliminado", "failure added": "fallo_anadido"}
+# Clases de dispositivo (clases de instalación públicas de Windows) -> categoría. NO se deduce el tipo concreto:
+# HIDClass = interfaz HID genérica y USB = controlador/dispositivo USB, nunca «teclado».
+_CLASES_DISPOSITIVO = {
+    "keyboard": "teclado", "mouse": "raton", "hidclass": "interfaz_hid", "usb": "controlador_usb",
+    "diskdrive": "almacenamiento", "volume": "volumen_almacenamiento", "cdrom": "unidad_optica", "wpd": "dispositivo_portatil",
+    "image": "imagen", "camera": "camara", "media": "multimedia", "audioendpoint": "audio", "net": "red",
+    "bluetooth": "bluetooth", "ports": "puertos", "printer": "impresora", "monitor": "monitor",
+    "smartcardreader": "lector_tarjetas", "biometric": "biometrico", "softwaredevice": "dispositivo_software",
+}
+# GUID de clase (públicos) solo para detectar contradicciones con el nombre de clase.
+_GUID_CLASE_DISPOSITIVO = {
+    "{4d36e96b-e325-11ce-bfc1-08002be10318}": "keyboard", "{4d36e96f-e325-11ce-bfc1-08002be10318}": "mouse",
+    "{745a17a0-74d3-11d0-b6fe-00a0c90f57da}": "hidclass", "{36fc9e60-c465-11cf-8056-444553540000}": "usb",
+    "{4d36e967-e325-11ce-bfc1-08002be10318}": "diskdrive", "{4d36e972-e325-11ce-bfc1-08002be10318}": "net",
+}
+_RE_GUID = re.compile(r"\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}")
+
+
+def _cambios_auditoria(texto, codigos):
+    """Acción de auditoría de 4719. Código y texto deben coincidir si llegan los dos; cualquier token desconocido,
+    vacío o contradictorio (añadido y eliminado sobre la misma marca) -> `no_determinado`."""
+    def _parsear(valor, tabla):
+        if valor in (None, ""):
+            return None
+        tokens = [x.strip().lower() for x in str(valor).split(",")]
+        if not tokens or any(x not in tabla for x in tokens):
+            return "invalido"
+        return {tabla[x] for x in tokens}
+    por_codigo = _parsear(codigos, _CAMBIOS_AUDITORIA_CODIGO)
+    por_texto = _parsear(texto, _CAMBIOS_AUDITORIA_TEXTO)
+    if "invalido" in (por_codigo, por_texto) or (por_codigo is None and por_texto is None):
+        return "no_determinado"
+    if por_codigo is not None and por_texto is not None and por_codigo != por_texto:
+        return "no_determinado"
+    acciones = por_codigo if por_codigo is not None else por_texto
+    if {"exito_anadido", "exito_eliminado"} <= acciones or {"fallo_anadido", "fallo_eliminado"} <= acciones:
+        return "no_determinado"
+    return sorted(acciones)
+
+
+def evidencia_auditoria_dispositivo(win):
+    """Security 4719 -> subcategoría (tabla cerrada de GUID oficiales) y acción; Security 6416 -> clase del dispositivo.
+    {} para cualquier otro evento. Nunca identificadores, descripciones, fabricantes, ubicación ni el sujeto."""
+    if not isinstance(win, dict) or str(win.get("channel") or "").strip().lower() != "security":
+        return {}
+    eid = str(win.get("event_id") or "").strip()
+    if eid == "4719":
+        guid = str(win.get("auditoria_subcategoria_guid") or "").strip().lower()
+        sub = _SUBCATEGORIAS_AUDITORIA.get(guid) if _RE_GUID.fullmatch(guid) else None
+        nombre = str(win.get("auditoria_subcategoria_nombre") or "").strip().lower()
+        if sub is not None and nombre and " ".join(nombre.split()) != sub[0].lower():
+            sub = None                                   # el nombre informado contradice el GUID
+        return {"win_auditoria_subcategoria": sub[1] if sub else "no_determinado",
+                "win_auditoria_cambio": _cambios_auditoria(win.get("auditoria_cambios"), win.get("auditoria_cambios_id"))}
+    if eid == "6416":
+        clase = str(win.get("dispositivo_clase") or "").strip().lower()
+        cat = _CLASES_DISPOSITIVO.get(clase)
+        gid = str(win.get("dispositivo_clase_id") or "").strip().lower()
+        if cat and gid in _GUID_CLASE_DISPOSITIVO and _GUID_CLASE_DISPOSITIVO[gid] != clase:
+            cat = None                                   # el GUID de clase contradice el nombre de clase
+        return {"win_dispositivo_clase": cat or "no_determinado"}
+    return {}
+
+
 def construir_evidencia_tecnica(alert):
     """
     `alert`: dict de una alerta Wazuh (claves planas proyectadas por
@@ -514,4 +621,6 @@ def construir_evidencia_tecnica(alert):
         **evidencia_cuenta(a),
         # Entrada 1.2: SOLO eventos Windows Application/System
         **evidencia_evento_windows(a.get("win")),
+        # Entrada 1.4: SOLO Security 4719 / 6416
+        **evidencia_auditoria_dispositivo(a.get("win")),
     }

@@ -248,8 +248,9 @@ def construir_entrada_e(alert, activo):
         # Entrada 1.2: añade campos OPCIONALES win_* (solo eventos Windows Application/System) y, en eventos
         # Windows, calcula horario y ventana con la hora original del evento (`hora_del_evento`).
         # Entrada 1.3: añade `maintenance_scope` y `maintenance_scope_match` (alcance de la autorización).
-        # Los snapshots 1.0/1.1/1.2 siguen siendo válidos y no se recalculan; la huella ignora la versión.
-        "schema_version": "1.3",
+        # Entrada 1.4: añade campos OPCIONALES de Security 4719 (subcategoría y acción de auditoría) y 6416 (clase del dispositivo).
+        # Los snapshots 1.0–1.3 siguen siendo válidos y no se recalculan; la huella ignora la versión.
+        "schema_version": "1.4",
         "alert_description_es": anonimizar_texto(descripcion),
         "wazuh_level": nivel,
         "wazuh_rule_groups": grupos,
@@ -365,6 +366,8 @@ _ETIQUETAS_EXTRA = {
     "cuenta_cambio_privilegios": "cambio de privilegios", "cuenta_estado": "estado de la cuenta",
     "win_canal": "canal del registro de eventos de Windows", "win_proveedor": "proveedor del evento",
     "win_proveedor_categoria": "categoría del proveedor", "win_id_evento": "ID de evento de Windows",
+    "win_auditoria_subcategoria": "subcategoría de auditoría modificada", "win_auditoria_cambio": "cambio de auditoría",
+    "win_dispositivo_clase": "clase del dispositivo",
 }
 
 
