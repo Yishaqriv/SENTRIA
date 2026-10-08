@@ -4584,6 +4584,33 @@ class EventosWindowsAppSistemaTests(SimpleTestCase):
         self.assertEqual(sis, {"win_canal": "sistema", "win_proveedor": "Microsoft-Windows-WindowsUpdateClient",
                                "win_proveedor_categoria": "actualizacion_windows", "win_id_evento": "20"})
 
+    def test_spp_60642_conserva_el_proveedor_en_la_entrada_sin_identificadores(self):
+        raw = _win_app("Microsoft-Windows-Security-SPP", "16384", "Application", ed={"data": "texto libre del evento"},
+                       rule_id="60642", desc="Software protection service scheduled successfully.", level=3,
+                       groups=("windows", "windows_application"))
+        self.assertEqual(self._win_campos(raw),
+                         {"win_canal": "aplicacion", "win_proveedor": "Microsoft-Windows-Security-SPP",
+                          "win_proveedor_categoria": "licencias_windows", "win_id_evento": "16384"})
+        ent = _cee(raw, _ACT_LAP)
+        entrada = _dsm.construir_entrada(SimpleNamespace(contexto_ia_snapshot=ent))
+        self.assertEqual(entrada["evidencia_tecnica"]["win_proveedor_categoria"], "licencias_windows")
+        self.assertEqual(entrada["evidencia_tecnica"]["win_id_evento"], "16384")
+        self.assertTrue(validar_privacidad(entrada)[0])
+        alerta = SimpleNamespace(wazuh_agent_id="001", opensearch_id="DOC-60642", activo_logico=_ACT_LAP)
+        self.assertEqual(_dsm._fuga_de_identificadores(alerta, entrada), [])
+        blob = json.dumps(ent, ensure_ascii=False) + _cp(ent)
+        for prohibido in ("PC-PRIVADO", "DOC-60642", "texto libre"):
+            self.assertNotIn(prohibido, blob, prohibido)
+        self.assertIn("proveedor del evento: Microsoft-Windows-Security-SPP", _cp(ent))
+        # la categoría describe la función técnica del proveedor; no afirma benignidad, autorización ni veredicto
+        self.assertNotRegex(evi._PROVEEDORES_WIN["microsoft-windows-security-spp"][1],
+                            r"benign|legitim|autoriz|falso|seguro|normal")
+        # un proveedor parecido pero desconocido mantiene el comportamiento previsto y no se exporta
+        parecido = self._win_campos(_win_app("Microsoft-Windows-Security-SPP-Ficticio", "16384", ed={}))
+        self.assertEqual((parecido["win_proveedor"], parecido["win_proveedor_categoria"]), ("no_determinado", "no_catalogado"))
+        self.assertNotIn("ficticio", json.dumps(_cee(_win_app("Microsoft-Windows-Security-SPP-Ficticio", "16384", ed={}),
+                                                     _ACT_LAP), ensure_ascii=False).lower())
+
     def test_proveedor_sin_distinguir_mayusculas_y_nombre_canonico(self):
         ev = self._win_campos(_win_app("  microsoft-windows-user profiles service ", "1552", "application", ed={}))
         self.assertEqual((ev["win_proveedor"], ev["win_proveedor_categoria"], ev["win_canal"]),

@@ -433,6 +433,7 @@ _PROVEEDORES_WIN = {p.lower(): (p, c) for p, c in (
     ("MsiInstaller", "instalador_windows"),
     ("Microsoft-Windows-RestartManager", "gestor_reinicio"),
     ("Microsoft-Windows-WindowsUpdateClient", "actualizacion_windows"),
+    ("Microsoft-Windows-Security-SPP", "licencias_windows"),
     ("VSS", "instantaneas_volumen"),
     ("Microsoft-Windows-User Profiles Service", "perfiles_usuario"),
     ("Microsoft-Windows-AppModel-State", "estado_aplicaciones"),
