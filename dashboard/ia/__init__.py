@@ -6,6 +6,7 @@ Estructura:
 - contrato.py      : enums y validación estricta de la salida JSON (contrato 1C).
 - prompt.py        : construcción de la entrada (capa E) y del prompt.
 - proveedores.py   : abstracción configurable de proveedor (gemini_developer / vertex_tuned).
+- entrada_exportacion.py : entrada del modelo ajustado (contrato exp-entrada-1 + plantilla v1 del piloto).
 - analizador.py    : orquestación -> resultado normalizado o ANALISIS_FALLIDO.
 - persistencia.py  : escritura en el modelo Alert respetando la inmutabilidad del veredicto IA.
 

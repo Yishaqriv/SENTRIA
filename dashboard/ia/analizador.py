@@ -8,8 +8,13 @@ con veredicto_ia=None y la respuesta cruda conservada.
 """
 from __future__ import annotations
 
+import hashlib
+from types import SimpleNamespace
+
 from .anonimizacion import anonimizar_texto
 from .contrato import parsear_json_estricto, validar_salida_ia
+from .entrada_exportacion import (CONTRATO_ENTRADA, PLANTILLA_SHA256, PLANTILLA_VERSION, TRANSFORMACIONES,
+                                  EntradaNoRepresentable, texto_usuario)
 from .prompt import construir_entrada_e, construir_prompt, diagnostico_tiempo
 from .proveedores import ProveedorIA, nombre_proveedor_activo, obtener_proveedor
 
@@ -50,8 +55,23 @@ def _raw_seguro(texto):
 CAT_FALLO = (
     "proveedor_no_disponible", "proveedor_excepcion", "timeout",
     "respuesta_vacia", "respuesta_truncada", "no_json", "markdown",
-    "contrato_invalido", "bloqueo_privacidad", "bloqueo_seguridad_proveedor", "otra",
+    "contrato_invalido", "bloqueo_privacidad", "bloqueo_seguridad_proveedor", "entrada_no_representable", "otra",
 )
+
+
+def _entrada_modelo_ajustado(entrada, prov):
+    """
+    Proveedores con `formato_entrada == exp-entrada-1`: texto = plantilla v1 + entrada exportada a partir de
+    la ENTRADA del dataset (lista blanca de la capa E; nunca la salida esperada). Devuelve (texto, traza) para
+    conservar en el snapshot qué se envió realmente. Lanza EntradaNoRepresentable.
+    """
+    from dashboard.dataset import construir_entrada    # import perezoso (modelos de Django)
+    texto, exportada = texto_usuario(construir_entrada(SimpleNamespace(contexto_ia_snapshot=entrada)))
+    traza = {"proveedor": prov.nombre, "recurso_modelo": getattr(prov, "_modelo", "desconocido"),
+             "plantilla": PLANTILLA_VERSION, "plantilla_sha256": PLANTILLA_SHA256,
+             "contrato_entrada": CONTRATO_ENTRADA, "transformaciones": list(TRANSFORMACIONES),
+             "entrada_exportada": exportada, "texto_enviado_sha256": hashlib.sha256(texto.encode("utf-8")).hexdigest()}
+    return texto, traza
 
 
 def _categoria_fallo(motivo):
@@ -72,6 +92,8 @@ def _categoria_fallo(motivo):
         return "no_json"
     if "no cumple el contrato" in m:
         return "contrato_invalido"
+    if "no representable" in m:
+        return "entrada_no_representable"
     if "desconocido o no disponible" in m or "no devolvió un análisis" in m:
         return "proveedor_no_disponible"
     if "lanzó una excepción" in m:
@@ -146,6 +168,20 @@ def analizar_alerta(alert, activo, proveedor=None):
             snapshot=entrada,
         )
 
+    if getattr(prov, "formato_entrada", None) == CONTRATO_ENTRADA:
+        try:
+            prompt, traza = _entrada_modelo_ajustado(entrada, prov)
+        except EntradaNoRepresentable as e:
+            return resultado_fallido(
+                raw="",
+                motivo=f"Entrada no representable para el modelo ajustado: {e}",
+                proveedor=prov.nombre,
+                modelo=getattr(prov, "_modelo", "desconocido"),
+                snapshot=entrada,
+            )
+        # Capa P en el snapshot: proveedor, recurso, plantilla, contrato y entrada realmente enviada.
+        entrada["_entrada_modelo"] = traza
+
     try:
         respuesta = prov.analizar(prompt)
     except Exception as e:  # un proveedor no debería lanzar, pero por si acaso
@@ -201,6 +237,19 @@ def analizar_alerta(alert, activo, proveedor=None):
             snapshot=entrada,
             diag=diag,
         )
+
+    if getattr(prov, "valida_privacidad_salida", False):
+        from dashboard.dataset import validar_privacidad    # import perezoso (modelos de Django)
+        privacidad_ok, hallazgos = validar_privacidad(data)
+        if not privacidad_ok:
+            return resultado_fallido(
+                raw=raw,
+                motivo=f"La respuesta no supera la validación de privacidad: {hallazgos}",
+                proveedor=prov.nombre,
+                modelo=modelo,
+                snapshot=entrada,
+                diag=diag,
+            )
 
     return {
         "estado_analisis": "COMPLETED",

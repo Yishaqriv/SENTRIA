@@ -5729,3 +5729,209 @@ class LoteFlujoTests(LoteBase):
                 call_command("aceptar_lote", "--manifiesto", man2, "--lista", lista, "--referencia", "r",
                              "--autor", "lote_resp", "--escribir", stdout=StringIO())   # sin autorización
         self._sin_cambios(self.cands)
+
+
+# ============================================================================
+# Integración EXPERIMENTAL del modelo ajustado en Vertex (desactivada por defecto). Sin red:
+# google.auth y urlopen simulados. Plantilla v1 + exp-entrada-1 del piloto.
+# ============================================================================
+import copy as _copy
+import hashlib as _hashlib
+import socket as _socket
+import urllib.error as _uerr
+from io import BytesIO as _BytesIO
+
+from dashboard.ia import entrada_exportacion as _ee
+from dashboard.ia.analizador import _entrada_modelo_ajustado
+
+_TOKEN_FALSO = "ya29.TOKEN-SECRETO-DE-PRUEBA"
+_ENDPOINT_PRUEBA = "projects/123456789/locations/us/endpoints/987654321"
+_ENV_VERTEX = {"IA_VERTEX_HABILITADO": "1", "GEMINI_TUNED_ENDPOINT": _ENDPOINT_PRUEBA}
+
+
+class _RespHTTP:
+    def __init__(self, cuerpo):
+        self._b = json.dumps(cuerpo).encode("utf-8")
+    def read(self):
+        return self._b
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+
+def _resp_vertex(salida, finish="STOP"):
+    texto = salida if isinstance(salida, str) else json.dumps(salida, ensure_ascii=False)
+    return _RespHTTP({"candidates": [{"content": {"role": "model", "parts": [{"text": texto}]}, "finishReason": finish}],
+                      "usageMetadata": {"promptTokenCount": 1500, "candidatesTokenCount": 450, "totalTokenCount": 1950},
+                      "modelVersion": "gemini-3.5-flash@default"})
+
+
+class VertexTunedIntegracionTests(SimpleTestCase):
+    def _analizar(self, alerta=ALERTA_DEMO, activo=ACTIVO_FAKE, respuesta=None, efecto=None, env=_ENV_VERTEX):
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token", return_value=_TOKEN_FALSO) as tok, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen",
+                           side_effect=efecto, return_value=respuesta) as url:
+            r = analizar_alerta(alerta, activo, proveedor="vertex_tuned")
+        return r, tok, url
+
+    # --- flujo por defecto intacto ---
+    def test_por_defecto_sigue_el_flujo_actual(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IA_PROVIDER", None)
+            self.assertEqual(proveedores.nombre_proveedor_activo(), "gemini_developer")
+            self.assertIsInstance(proveedores.obtener_proveedor(), proveedores.GeminiDeveloperProvider)
+        fake = _ProveedorFake()
+        r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=fake)
+        self.assertEqual(r["estado_analisis"], "COMPLETED")
+        self.assertEqual(fake.prompt_recibido, construir_prompt(construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE)))
+        self.assertNotIn("_entrada_modelo", r["contexto_ia_snapshot"])
+
+    # --- desactivado / configuración ---
+    def test_desactivado_por_defecto_no_autentica_ni_llama(self):
+        for env in ({"IA_VERTEX_HABILITADO": "0", "GEMINI_TUNED_ENDPOINT": _ENDPOINT_PRUEBA},
+                    {"IA_VERTEX_HABILITADO": "", "GEMINI_TUNED_ENDPOINT": ""}):
+            r, tok, url = self._analizar(env=env)
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO")
+            self.assertIn("desactivada", r["motivo_fallo"])
+            self.assertEqual((tok.call_count, url.call_count), (0, 0))
+
+    def test_configuracion_incompleta_o_invalida_da_error_claro(self):
+        for endpoint, texto in (("", "falta GEMINI_TUNED_ENDPOINT"),
+                                ("projects/x/locations/us-central1/endpoints/1", "configuración inválida"),
+                                ("https://evil/projects/1/locations/us/endpoints/2", "configuración inválida")):
+            r, tok, url = self._analizar(env={"IA_VERTEX_HABILITADO": "1", "GEMINI_TUNED_ENDPOINT": endpoint})
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO")
+            self.assertIn(texto, r["motivo_fallo"])
+            self.assertEqual((tok.call_count, url.call_count), (0, 0))
+
+    def test_sin_credenciales_adc_falla_sin_llamar(self):
+        from google.auth.exceptions import DefaultCredentialsError
+        with mock.patch.dict(os.environ, _ENV_VERTEX), \
+                mock.patch("google.auth.default", side_effect=DefaultCredentialsError("sin ADC")) as adc, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen") as url:
+            r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor="vertex_tuned")
+        self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO")
+        self.assertIn("credenciales predeterminadas de aplicación no disponibles (DefaultCredentialsError)", r["motivo_fallo"])
+        self.assertEqual((adc.call_count, url.call_count), (1, 0))
+
+    # --- petición: endpoint, plantilla, entrada y parámetros ---
+    def test_peticion_usa_endpoint_plantilla_entrada_y_parametros(self):
+        r, tok, url = self._analizar(respuesta=_resp_vertex(SALIDA_VALIDA))
+        self.assertEqual((tok.call_count, url.call_count), (1, 1))
+        req = url.call_args[0][0]
+        self.assertEqual(req.full_url, f"https://aiplatform.us.rep.googleapis.com/v1/{_ENDPOINT_PRUEBA}:generateContent")
+        self.assertEqual(req.get_method(), "POST")
+        cuerpo = json.loads(req.data)
+        self.assertEqual(cuerpo["generationConfig"], {"responseMimeType": "application/json", "maxOutputTokens": 8192,
+                                                      "thinkingConfig": {"thinkingLevel": "MINIMAL"}})
+        self.assertEqual([c["role"] for c in cuerpo["contents"]], ["user"])        # nunca un turno «model»
+        texto = cuerpo["contents"][0]["parts"][0]["text"]
+        entrada_ds = _dsm.construir_entrada(SimpleNamespace(contexto_ia_snapshot=construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE)))
+        esperado, exportada = _ee.texto_usuario(entrada_ds)
+        self.assertEqual(texto, esperado)
+        pre, post = _ee.plantilla_v1().split(_ee.MARCADOR)
+        self.assertTrue(texto.startswith(pre) and texto.endswith(post))
+        self.assertEqual(texto[len(pre):len(texto) - len(post)], json.dumps(exportada, ensure_ascii=False, indent=1))
+        self.assertNotIn("v2", texto[:200])
+        self.assertEqual(r["estado_analisis"], "COMPLETED")
+        self.assertEqual((r["proveedor_ia"], r["modelo_ia"]), ("vertex_tuned", _ENDPOINT_PRUEBA))
+        traza = r["contexto_ia_snapshot"]["_entrada_modelo"]
+        self.assertEqual((traza["plantilla"], traza["plantilla_sha256"], traza["contrato_entrada"], traza["transformaciones"],
+                          traza["recurso_modelo"]),
+                         ("PLANTILLA_ENTRADA_v1", _ee.PLANTILLA_SHA256, "exp-entrada-1", ["T-NORM-v1", "T-NEUTRO-v1"],
+                          _ENDPOINT_PRUEBA))
+        self.assertEqual(traza["entrada_exportada"], exportada)
+        self.assertEqual(traza["texto_enviado_sha256"], _hashlib.sha256(texto.encode("utf-8")).hexdigest())
+
+    def test_la_salida_esperada_nunca_se_envia(self):
+        snap = construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE)
+        snap["_salida_objetivo"] = {"explanation_es": "SENTINELA-SALIDA-ESPERADA"}
+        snap["respuesta_ia_original"] = "SENTINELA-RESPUESTA"
+        texto, traza = _entrada_modelo_ajustado(snap, proveedores.VertexTunedProvider())
+        self.assertNotIn("SENTINELA", texto)
+        self.assertNotIn("SENTINELA", json.dumps(traza, ensure_ascii=False))
+
+    # --- validación de la respuesta ---
+    def test_respuesta_valida_pasa(self):
+        r, _, _ = self._analizar(respuesta=_resp_vertex(SALIDA_VALIDA))
+        self.assertEqual(r["estado_analisis"], "COMPLETED")
+        self.assertEqual(r["veredicto_ia"], SALIDA_VALIDA["verdict"])
+
+    def test_json_invalido_contrato_invalido_y_privacidad_fallan(self):
+        invalida = dict(SALIDA_VALIDA, verdict="BENIGNO")
+        con_ruta = dict(SALIDA_VALIDA, missing_evidence=["Registros de modificaciones en /etc/sysctl.conf"])
+        for salida, categoria in (("esto no es json", "no_json"), (invalida, "contrato_invalido"),
+                                  (con_ruta, "bloqueo_privacidad")):
+            r, _, url = self._analizar(respuesta=_resp_vertex(salida))
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO", categoria)
+            self.assertEqual(r["categoria_fallo"], categoria)
+            self.assertIsNone(r["veredicto_ia"])
+            self.assertEqual(url.call_count, 1)
+
+    def test_truncada_y_bloqueo_fallan(self):
+        for fr in ("MAX_TOKENS", "SAFETY"):
+            r, _, _ = self._analizar(respuesta=_resp_vertex(SALIDA_VALIDA, finish=fr))
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO", fr)
+            self.assertIsNone(r["veredicto_ia"])
+
+    # --- errores sin llamadas adicionales ni credenciales expuestas ---
+    def test_http_y_timeout_una_sola_llamada_sin_credenciales(self):
+        errores = (_uerr.HTTPError("u", 403, "Forbidden", {}, _BytesIO(b'{"error":{"status":"PERMISSION_DENIED"}}')),
+                   _uerr.HTTPError("u", 500, "Error", {}, _BytesIO(b"no json")),
+                   _socket.timeout("timed out"), _uerr.URLError("sin red"))
+        for err in errores:
+            with self.assertLogs(level="DEBUG") as logs:
+                import logging
+                logging.getLogger("prueba.vertex").debug("inicio")
+                r, tok, url = self._analizar(efecto=err)
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO")
+            self.assertEqual((tok.call_count, url.call_count), (1, 1))
+            volcado = json.dumps(r, ensure_ascii=False, default=str) + "\n".join(logs.output)
+            self.assertNotIn(_TOKEN_FALSO, volcado)
+            self.assertNotIn("Bearer", volcado)
+        self.assertIn("HTTP 403", self._analizar(efecto=errores[0])[0]["motivo_fallo"])
+
+    def test_respuesta_valida_no_expone_credenciales(self):
+        r, _, url = self._analizar(respuesta=_resp_vertex(SALIDA_VALIDA))
+        self.assertEqual(url.call_args[0][0].get_header("Authorization"), f"Bearer {_TOKEN_FALSO}")
+        self.assertNotIn(_TOKEN_FALSO, json.dumps(r, ensure_ascii=False, default=str))
+
+    # --- familias no representables ---
+    def test_familia_no_representable_se_rechaza_sin_llamar(self):
+        raw = _win_app("Microsoft-Windows-Security-SPP", "16384", "Application", ed={}, rule_id="60642",
+                       desc="Software protection service scheduled successfully.", level=3,
+                       groups=("windows", "windows_application"))
+        r, tok, url = self._analizar(alerta=raw, activo=_ACT_LAP)
+        self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO")
+        self.assertEqual(r["categoria_fallo"], "entrada_no_representable")
+        self.assertIn("win_proveedor", r["motivo_fallo"])
+        self.assertEqual((tok.call_count, url.call_count), (0, 0))
+        with self.assertRaises(_ee.EntradaNoRepresentable):
+            _ee.normalizar(dict(_BASE_GOLDEN, schema_version="1.4", evidencia_tecnica={"campo_inventado": "x"}))
+
+    # --- plantilla y snapshots históricos ---
+    def test_plantilla_v1_aprobada(self):
+        texto = _ee.plantilla_v1()
+        self.assertEqual(_hashlib.sha256(texto.encode("utf-8")).hexdigest(),
+                         "1d29f7962dc0751ee581c5c2d87f984c1e2df7933c17f12a07b918a369bd1a9a")
+        self.assertEqual(texto.count("{ENTRADA_EXPORT_JSON}"), 1)
+
+    def test_t_neutro_entrada(self):
+        snap = _SNAPSHOTS_GOLDEN["1.3"]
+        x = _ee.entrada_exportada(_ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=snap)))
+        self.assertEqual(x["evidence"]["fim"]["path_category"], "directorio_aislado_designado")
+        self.assertEqual(x["maintenance_scope"], "archivos_directorio_aislado")
+        self.assertNotIn("laboratorio", json.dumps(x, ensure_ascii=False))
+
+    def test_snapshots_historicos_intactos(self):
+        for v, snap in _SNAPSHOTS_GOLDEN.items():
+            antes = _copy.deepcopy(snap)
+            ent = _ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=snap))
+            _ee.texto_usuario(ent)
+            self.assertEqual(snap, antes, v)
+            self.assertEqual(_sellos.huella_integridad(ent), _HUELLAS_GOLDEN[v], v)
+            con_traza = dict(snap, _entrada_modelo={"plantilla": "PLANTILLA_ENTRADA_v1"})
+            self.assertEqual(_sellos.huella_integridad(_ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=con_traza))),
+                             _HUELLAS_GOLDEN[v], v)
