@@ -6178,8 +6178,10 @@ class AccionesEscrituraPostTests(TestCase):
              mock.patch("dashboard.views.ingestar_lote", return_value=dict(_SIN_NOVEDADES)),
              mock.patch("dashboard.views.reanalizar_alerta", return_value="analizada"),
              mock.patch("dashboard.views.get_alert_by_id", return_value=None),
-             mock.patch("dashboard.ia.ingesta.analizar_alerta", side_effect=AssertionError("análisis no permitido"))]
-        self.get_latest, self.ingestar, self.reanalizar, self.get_by_id, self.analizar = [x.start() for x in p]
+             mock.patch("dashboard.ia.ingesta.analizar_alerta", side_effect=AssertionError("análisis no permitido")),
+             mock.patch("dashboard.views.reclasificar_alertas_pendientes",
+                        return_value={"total": 0, "analizadas": 0, "omitidas": 0, "fallidas": 0})]
+        self.get_latest, self.ingestar, self.reanalizar, self.get_by_id, self.analizar, self.reclasificar = [x.start() for x in p]
         for x in p:
             self.addCleanup(x.stop)
 
@@ -6270,3 +6272,50 @@ class AccionesEscrituraPostTests(TestCase):
         self._sin_efectos_actualizar()
         self.reanalizar.assert_not_called()
         self.get_by_id.assert_not_called()
+        self.reclasificar.assert_not_called()
+
+    # -- Reclasificar fallidas (re-análisis en lote, sólo ADMIN) --
+    def _admin(self):
+        self.user.perfilusuario.rol = "ADMIN"
+        self.user.perfilusuario.save()
+
+    def test_reclasificar_get_405_sin_efectos(self):
+        self._admin()
+        self.assertEqual(self.client.get(reverse("reclasificar_pendientes")).status_code, 405)
+        self.reclasificar.assert_not_called()
+        self.reanalizar.assert_not_called()
+
+    def test_reclasificar_post_sin_csrf_rechazado(self):
+        self._admin()
+        self.assertEqual(self.client.post(reverse("reclasificar_pendientes")).status_code, 403)
+        self.reclasificar.assert_not_called()
+
+    def test_reclasificar_post_sin_rol_admin_rechazado(self):
+        token = self._csrf()                                # ANALISTA: rol insuficiente
+        r = self.client.post(reverse("reclasificar_pendientes"), {"csrfmiddlewaretoken": token})
+        self.assertIn(r.status_code, (302, 403))
+        self.client.logout()
+        self.client.get(reverse("login"))
+        r = self.client.post(reverse("reclasificar_pendientes"), {"csrfmiddlewaretoken": self.client.cookies["csrftoken"].value})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn(reverse("login"), r["Location"])
+        self.reclasificar.assert_not_called()
+
+    def test_reclasificar_post_admin_una_vez_con_mensaje(self):
+        self._admin()
+        token = self._csrf()
+        r = self.client.post(reverse("reclasificar_pendientes"), {"csrfmiddlewaretoken": token}, follow=True)
+        self.assertEqual(r.redirect_chain[0], (reverse("index"), 302))
+        self.reclasificar.assert_called_once_with()
+        self.assertContains(r, "No hay alertas para reclasificar.")
+
+    def test_boton_reclasificar_es_formulario_post_con_csrf_y_confirmacion(self):
+        self._admin()
+        body = self.client.get(reverse("index")).content.decode()
+        url = reverse("reclasificar_pendientes")
+        self.assertIn(f'<form method="post" action="{url}"', body)
+        self.assertNotIn(f'href="{url}"', body)
+        i = body.index(f'action="{url}"')
+        self.assertIn("return confirm(", body[i:i + 400])
+        self.assertIn("csrfmiddlewaretoken", body[i:i + 600])
+        self.reclasificar.assert_not_called()

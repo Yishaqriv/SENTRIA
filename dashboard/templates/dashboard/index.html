@@ -604,7 +604,11 @@
         <a href="{% url 'exportar_csv' %}{% if query_string %}?{{ query_string }}{% endif %}" class="btn btn-green" style="font-size:13px; padding:8px 16px;">⬇ Exportar CSV</a>
         {% endif %}
         {% if request.user|tiene_rol:"ADMIN" %}
-        <a href="{% url 'reclasificar_pendientes' %}" class="btn btn-admin" style="font-size:13px; padding:8px 16px;" onclick="return confirm('¿Re-analizar las alertas con fallo de análisis (y las legacy pendientes)? Puede tardar según la cantidad y la pausa entre llamadas.');">⟳ Reclasificar fallidas</a>
+        <form method="post" action="{% url 'reclasificar_pendientes' %}" style="display:inline; margin:0;"
+              onsubmit="return confirm('¿Re-analizar las alertas con fallo de análisis (y las legacy pendientes)? Puede tardar según la cantidad y la pausa entre llamadas.');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-admin" style="font-size:13px; padding:8px 16px;">⟳ Reclasificar fallidas</button>
+        </form>
         {% endif %}
     </div>
     <span class="results-count">

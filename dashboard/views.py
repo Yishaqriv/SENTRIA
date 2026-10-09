@@ -348,7 +348,9 @@ def update_alerts(request):
 
 
 @requiere_rol('ADMIN')
+@require_POST
 def reclasificar_pendientes(request):
+    """Re-análisis en lote (llama al modelo). Sólo POST + CSRF: un GET devuelve 405 sin efectos."""
     resultado = reclasificar_alertas_pendientes()
     if resultado['total'] == 0:
         messages.info(request, "No hay alertas para reclasificar.")
