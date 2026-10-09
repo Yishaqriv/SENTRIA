@@ -5935,3 +5935,229 @@ class VertexTunedIntegracionTests(SimpleTestCase):
             con_traza = dict(snap, _entrada_modelo={"plantilla": "PLANTILLA_ENTRADA_v1"})
             self.assertEqual(_sellos.huella_integridad(_ds.construir_entrada(SimpleNamespace(contexto_ia_snapshot=con_traza))),
                              _HUELLAS_GOLDEN[v], v)
+
+
+# ============================================================================
+# vertex_tuned: sustento de impactos «ninguno», token temporal por archivo y análisis dirigido (sin red).
+# ============================================================================
+import stat as _stat
+from dashboard.ia.sustento import impactos_nulos_sin_sustento
+from dashboard.management.commands.ingestar_alertas import _ProveedorContado
+
+_CVSS_ND = {k: "no_determinado" for k in contrato.CVSS_CLAVES}
+
+
+def _salida_cvss(**cvss):
+    return dict(SALIDA_VALIDA, cvss_factors=dict(_CVSS_ND, **cvss))
+
+
+class VertexSustentoImpactosTests(SimpleTestCase):
+    def _analizar(self, salida, entrada_extra=None):
+        orig = construir_entrada_e
+
+        def con_extra(alerta, activo):
+            e = orig(alerta, activo)
+            if entrada_extra:
+                e["observed_cvss_factors"] = dict(e.get("observed_cvss_factors") or {}, **entrada_extra)
+            return e
+        with mock.patch.dict(os.environ, _ENV_VERTEX), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token", return_value=_TOKEN_FALSO), \
+                mock.patch("dashboard.ia.analizador.construir_entrada_e", side_effect=con_extra), \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen", return_value=_resp_vertex(salida)) as url:
+            r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor="vertex_tuned")
+        self.assertEqual(url.call_count, 1)
+        return r
+
+    def test_ninguno_sin_sustento_se_rechaza_y_conserva_la_respuesta(self):
+        for cvss in ({"confidentiality_impact": "ninguno"}, {"integrity_impact": "ninguno"},
+                     {"confidentiality_impact": "ninguno", "integrity_impact": "ninguno"}):
+            r = self._analizar(_salida_cvss(**cvss))
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO", cvss)
+            self.assertEqual(r["categoria_fallo"], "impacto_sin_sustento")
+            self.assertIsNone(r["veredicto_ia"])
+            self.assertIn('"ninguno"', r["respuesta_ia_original"])           # no se sustituye nada
+            self.assertEqual(r["contexto_ia_snapshot"]["_diagnostico_fallo"]["categoria"], "impacto_sin_sustento")
+
+    def test_falso_positivo_o_ausencia_de_ataque_no_sostienen_ninguno(self):
+        fp = dict(_salida_cvss(confidentiality_impact="ninguno", integrity_impact="ninguno"), verdict="FALSO_POSITIVO",
+                  risk="LOW", explanation_es="No hay señales de ataque ni actividad maliciosa en la alerta registrada.")
+        r = self._analizar(fp)
+        self.assertEqual(r["categoria_fallo"], "impacto_sin_sustento")
+
+    def test_ninguno_con_sustento_estructurado_se_acepta(self):
+        r = self._analizar(_salida_cvss(confidentiality_impact="ninguno", integrity_impact="ninguno"),
+                           entrada_extra={"confidentiality_impact": "ninguno", "integrity_impact": "ninguno"})
+        self.assertEqual(r["estado_analisis"], "COMPLETED")
+        self.assertEqual(r["contexto_ia_snapshot"]["_entrada_modelo"]["entrada_exportada"]["observed_cvss_factors"]
+                         ["confidentiality_impact"], "ninguno")
+
+    def test_no_determinado_y_otros_valores_se_aceptan(self):
+        for cvss in ({}, {"confidentiality_impact": "bajo", "integrity_impact": "alto"}, {"availability_impact": "ninguno"}):
+            self.assertEqual(self._analizar(_salida_cvss(**cvss))["estado_analisis"], "COMPLETED", cvss)
+
+    def test_funcion_pura_y_proveedor_por_defecto_sin_cambios(self):
+        self.assertEqual(impactos_nulos_sin_sustento(_salida_cvss(integrity_impact="ninguno"), {}), ["integrity_impact"])
+        self.assertEqual(impactos_nulos_sin_sustento(_salida_cvss(integrity_impact="ninguno"),
+                                                     {"observed_cvss_factors": {"integrity_impact": "ninguno"}}), [])
+        r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=_ProveedorFake(
+            texto=json.dumps(_salida_cvss(confidentiality_impact="ninguno"))))
+        self.assertEqual(r["estado_analisis"], "COMPLETED")                 # el flujo actual no cambia
+
+
+class VertexTokenArchivoTests(SimpleTestCase):
+    TOKEN = "ya29.TOKEN-ARCHIVO-SECRETO-0123456789abcdef"
+
+    def _archivo(self, datos=None, modo=0o600, crudo=None):
+        d = tempfile.mkdtemp()
+        ruta = os.path.join(d, "token.json")
+        with open(ruta, "w", encoding="utf-8") as f:
+            f.write(crudo if crudo is not None else json.dumps(datos if datos is not None else {
+                "access_token": self.TOKEN,
+                "expira_utc": (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=30)).isoformat()}))
+        os.chmod(ruta, modo)
+        return ruta
+
+    def _env(self, ruta):
+        return dict(_ENV_VERTEX, VERTEX_AUTENTICACION="token_archivo", VERTEX_TOKEN_ARCHIVO=ruta)
+
+    def _analizar(self, env, respuesta=None):
+        with mock.patch.dict(os.environ, env), \
+                mock.patch("google.auth.default", side_effect=AssertionError("no debe usarse el ADC")) as adc, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen",
+                           return_value=respuesta or _resp_vertex(_salida_cvss())) as url:
+            r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor="vertex_tuned")
+        self.assertEqual(adc.call_count, 0)                                  # sin vuelta al ADC
+        return r, url
+
+    def test_token_valido_se_usa_sin_adc_ni_exposicion(self):
+        r, url = self._analizar(self._env(self._archivo()))
+        self.assertEqual(r["estado_analisis"], "COMPLETED")
+        self.assertEqual(url.call_args[0][0].get_header("Authorization"), f"Bearer {self.TOKEN}")
+        self.assertNotIn(self.TOKEN, json.dumps(r, ensure_ascii=False, default=str))
+
+    def test_archivos_rechazados_sin_llamar_ni_revelar_valores(self):
+        ahora = datetime.datetime.now(datetime.timezone.utc)
+        casos = {
+            "vencido": self._archivo({"access_token": self.TOKEN, "expira_utc": (ahora - datetime.timedelta(minutes=1)).isoformat()}),
+            "a punto de vencer": self._archivo({"access_token": self.TOKEN, "expira_utc": (ahora + datetime.timedelta(seconds=30)).isoformat()}),
+            "sin zona": self._archivo({"access_token": self.TOKEN, "expira_utc": "2099-01-01T00:00:00"}),
+            "sin caducidad": self._archivo({"access_token": self.TOKEN}),
+            "refresh_token": self._archivo({"access_token": self.TOKEN, "expira_utc": "2099-01-01T00:00:00Z",
+                                            "refresh_token": "1//REFRESH-SECRETO"}),
+            "clave privada": self._archivo({"access_token": self.TOKEN, "expira_utc": "2099-01-01T00:00:00Z",
+                                            "private_key": "-----BEGIN PRIVATE KEY-----SECRETO"}),
+            "permisos 644": self._archivo(modo=0o644),
+            "permisos 640": self._archivo(modo=0o640),
+            "no json": self._archivo(crudo=f"TOKEN={self.TOKEN}"),
+            "token inválido": self._archivo({"access_token": "con espacios no vale", "expira_utc": "2099-01-01T00:00:00Z"}),
+            "dentro del repositorio": os.path.join(proveedores._RAIZ_REPOSITORIO, "token_inexistente.json"),
+            "inexistente": "/tmp/no_existe_sentria_token.json",
+            "relativa": "token.json",
+        }
+        enlace_dir = tempfile.mkdtemp()
+        enlace = os.path.join(enlace_dir, "enlace.json")
+        os.symlink(self._archivo(), enlace)
+        casos["enlace simbólico"] = enlace
+        for nombre, ruta in casos.items():
+            r, url = self._analizar(self._env(ruta))
+            self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO", nombre)
+            self.assertEqual(url.call_count, 0, nombre)
+            volcado = json.dumps(r, ensure_ascii=False, default=str)
+            for secreto in (self.TOKEN, "REFRESH-SECRETO", "BEGIN PRIVATE", "con espacios"):
+                self.assertNotIn(secreto, volcado, nombre)
+
+    def test_configuracion_del_modo(self):
+        for env, texto in ((dict(_ENV_VERTEX, VERTEX_AUTENTICACION="otro"), "VERTEX_AUTENTICACION debe ser"),
+                           (dict(_ENV_VERTEX, VERTEX_AUTENTICACION="token_archivo", VERTEX_TOKEN_ARCHIVO=""),
+                            "exige VERTEX_TOKEN_ARCHIVO")):
+            r, url = self._analizar(env)
+            self.assertIn(texto, r["motivo_fallo"])
+            self.assertEqual(url.call_count, 0)
+
+    def test_adc_sigue_siendo_la_via_por_defecto(self):
+        from google.auth.exceptions import DefaultCredentialsError
+        env = dict(_ENV_VERTEX)
+        with mock.patch.dict(os.environ, env):
+            os.environ.pop("VERTEX_AUTENTICACION", None)
+            os.environ.pop("VERTEX_TOKEN_ARCHIVO", None)
+            with mock.patch("google.auth.default", side_effect=DefaultCredentialsError("x")) as adc, \
+                    mock.patch("dashboard.ia.proveedores.urllib.request.urlopen") as url:
+                r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor="vertex_tuned")
+        self.assertEqual((adc.call_count, url.call_count), (1, 0))
+        self.assertIn("credenciales predeterminadas", r["motivo_fallo"])
+
+    def test_mensajes_de_error_no_contienen_el_token(self):
+        ruta = self._archivo({"access_token": self.TOKEN, "expira_utc": "2000-01-01T00:00:00Z"})
+        with self.assertRaises(proveedores.TokenTemporalError) as cm:
+            proveedores.leer_token_temporal(ruta)
+        self.assertNotIn(self.TOKEN, str(cm.exception))
+
+
+class _FakeInterno(proveedores.ProveedorIA):
+    nombre = "vertex_tuned"
+    formato_entrada = "exp-entrada-1"
+    valida_privacidad_salida = True
+    valida_sustento_impactos = True
+    _modelo = "projects/1/locations/us/endpoints/2"
+
+    def analizar(self, prompt):
+        raise AssertionError("no debe llamarse")
+
+
+class ProveedorContadoCapacidadesTests(SimpleTestCase):
+    def test_reenvia_capacidades_del_proveedor_real(self):
+        p = _ProveedorContado(_FakeInterno(), tope=1, agent_id="000")
+        self.assertEqual((p.formato_entrada, p.valida_privacidad_salida, p.valida_sustento_impactos, p._modelo),
+                         ("exp-entrada-1", True, True, "projects/1/locations/us/endpoints/2"))
+        self.assertFalse(hasattr(_ProveedorContado(_FakeGemini(), tope=1, agent_id="000"), "formato_entrada"))
+
+
+class AnalisisDirigidoVertexTests(TestCase):
+    def setUp(self):
+        self.srv = _activo_real()
+        asignar_agente("000", "SRV-01")
+        self.osid = "DOC-PRUEBA-VERTEX-1"
+
+    def _doc(self):
+        return {"opensearch_id": self.osid, "agent_id": "000", "level": 10,
+                "description": "sshd: brute force trying to get access to the system.",
+                "groups": "syslog,sshd,authentication_failures", "rule_id": "5712", "timestamp": "2026-10-08T15:00:00Z"}
+
+    def _run(self, env, salida=None):
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token", return_value=_TOKEN_FALSO) as tok, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen",
+                           return_value=_resp_vertex(salida or _salida_cvss())) as url:
+            os.environ.pop("GEMINI_API_KEY", None)                       # vertex no necesita la clave de Gemini
+            try:
+                r = procesar_una_por_opensearch_id(self.osid, "000", get_uno=lambda _id: self._doc(), proveedor="vertex_tuned")
+            except _CommandError as e:
+                r = e
+        return r, tok, url
+
+    def test_vertex_desactivado_no_llama_ni_escribe(self):
+        r, tok, url = self._run({"IA_VERTEX_HABILITADO": "0", "GEMINI_TUNED_ENDPOINT": _ENDPOINT_PRUEBA})
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("vertex_tuned no utilizable", str(r))
+        self.assertEqual((tok.call_count, url.call_count, Alert.objects.count()), (0, 0, 0))
+
+    def test_vertex_habilitado_una_llamada_y_trazabilidad(self):
+        r, tok, url = self._run(_ENV_VERTEX)
+        self.assertEqual((r["llamadas_reales"], url.call_count, r["proveedor"]), (1, 1, "vertex_tuned"))
+        a = Alert.objects.get(opensearch_id=self.osid)
+        self.assertEqual((a.estado_analisis, a.proveedor_ia, a.modelo_ia), ("COMPLETED", "vertex_tuned", _ENDPOINT_PRUEBA))
+        self.assertEqual(a.contexto_ia_snapshot["_entrada_modelo"]["plantilla"], "PLANTILLA_ENTRADA_v1")
+        self.assertNotIn(_TOKEN_FALSO, json.dumps(a.contexto_ia_snapshot, ensure_ascii=False) + (a.respuesta_ia_original or ""))
+
+    def test_vertex_impacto_sin_sustento_queda_fallido(self):
+        r, _, url = self._run(_ENV_VERTEX, salida=_salida_cvss(confidentiality_impact="ninguno"))
+        a = Alert.objects.get(opensearch_id=self.osid)
+        self.assertEqual((a.estado_analisis, a.veredicto_ia, url.call_count), ("ANALISIS_FALLIDO", None, 1))
+        self.assertEqual(a.contexto_ia_snapshot["_diagnostico_fallo"]["categoria"], "impacto_sin_sustento")
+
+    def test_proveedor_solo_en_modo_dirigido(self):
+        with self.assertRaises(_CommandError):
+            call_command("ingestar_alertas", "--agent-id", "000", "--dry-run", "--proveedor", "vertex_tuned")
+        with self.assertRaises(_CommandError):
+            procesar_una_por_opensearch_id(self.osid, "000", get_uno=lambda _id: self._doc(), proveedor="otro")
+        self.assertEqual(Alert.objects.count(), 0)

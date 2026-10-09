@@ -16,6 +16,7 @@ from .contrato import parsear_json_estricto, validar_salida_ia
 from .entrada_exportacion import (CONTRATO_ENTRADA, PLANTILLA_SHA256, PLANTILLA_VERSION, TRANSFORMACIONES,
                                   EntradaNoRepresentable, texto_usuario)
 from .prompt import construir_entrada_e, construir_prompt, diagnostico_tiempo
+from .sustento import impactos_nulos_sin_sustento
 from .proveedores import ProveedorIA, nombre_proveedor_activo, obtener_proveedor
 
 RESULTADO_CLAVES = (
@@ -55,7 +56,8 @@ def _raw_seguro(texto):
 CAT_FALLO = (
     "proveedor_no_disponible", "proveedor_excepcion", "timeout",
     "respuesta_vacia", "respuesta_truncada", "no_json", "markdown",
-    "contrato_invalido", "bloqueo_privacidad", "bloqueo_seguridad_proveedor", "entrada_no_representable", "otra",
+    "contrato_invalido", "bloqueo_privacidad", "bloqueo_seguridad_proveedor", "entrada_no_representable",
+    "impacto_sin_sustento", "otra",
 )
 
 
@@ -92,6 +94,8 @@ def _categoria_fallo(motivo):
         return "no_json"
     if "no cumple el contrato" in m:
         return "contrato_invalido"
+    if "sin sustento estructurado" in m:
+        return "impacto_sin_sustento"
     if "no representable" in m:
         return "entrada_no_representable"
     if "desconocido o no disponible" in m or "no devolvió un análisis" in m:
@@ -245,6 +249,19 @@ def analizar_alerta(alert, activo, proveedor=None):
             return resultado_fallido(
                 raw=raw,
                 motivo=f"La respuesta no supera la validación de privacidad: {hallazgos}",
+                proveedor=prov.nombre,
+                modelo=modelo,
+                snapshot=entrada,
+                diag=diag,
+            )
+
+    if getattr(prov, "valida_sustento_impactos", False):
+        sin_sustento = impactos_nulos_sin_sustento(data, entrada)
+        if sin_sustento:
+            # No se sustituyen factores: la respuesta se conserva íntegra para diagnóstico.
+            return resultado_fallido(
+                raw=raw,
+                motivo=f"Impacto 'ninguno' sin sustento estructurado en la entrada: {sin_sustento}",
                 proveedor=prov.nombre,
                 modelo=modelo,
                 snapshot=entrada,

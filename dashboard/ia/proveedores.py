@@ -151,6 +151,70 @@ class GeminiDeveloperProvider(ProveedorIA):
 _RE_ENDPOINT_VERTEX = re.compile(r"projects/[a-z0-9-]{1,63}/locations/(us|eu)/endpoints/[0-9]{1,30}")
 _FR_BLOQUEO = ("SAFETY", "PROHIBITED", "BLOCKLIST", "SPII", "RECITATION")
 
+# --- Autenticación temporal por archivo (alternativa EXPLÍCITA al ADC; desactivada por defecto) ---
+MODOS_AUTENTICACION = ("adc", "token_archivo")
+_CLAVES_TOKEN = {"access_token", "expira_utc", "obtenido_utc"}
+_RE_TOKEN = re.compile(r"[A-Za-z0-9._~+/=-]{20,4096}")
+_RAIZ_REPOSITORIO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+MARGEN_CADUCIDAD_S = 60
+
+
+class TokenTemporalError(ValueError):
+    """Archivo de token no utilizable. El mensaje nunca incluye el token ni el contenido del archivo."""
+
+
+def leer_token_temporal(ruta, ahora=None):
+    """
+    Lee un token de acceso de corta duración desde un archivo PRIVADO externo al repositorio.
+    Formato JSON: {"access_token": "...", "expira_utc": "<ISO 8601 con zona>", "obtenido_utc": "..." (opcional)}.
+    Rechaza: enlaces simbólicos, otro propietario, permisos distintos de 600/400, archivos dentro del repositorio,
+    claves no admitidas (p. ej. refresh_token, private_key, password) y tokens vencidos o a menos de
+    MARGEN_CADUCIDAD_S de vencer. Sin renovación ni alternativa. El token conserva los permisos de la identidad
+    que lo obtuvo: su corta duración no equivale a permisos mínimos.
+    """
+    import datetime
+    import stat
+    if not ruta or not os.path.isabs(ruta):
+        raise TokenTemporalError("la ruta del archivo de token debe ser absoluta")
+    real = os.path.realpath(ruta)
+    if real == _RAIZ_REPOSITORIO or real.startswith(_RAIZ_REPOSITORIO + os.sep):
+        raise TokenTemporalError("el archivo de token no puede estar dentro del repositorio")
+    try:
+        st = os.lstat(ruta)
+    except OSError:
+        raise TokenTemporalError("el archivo de token no existe o no es accesible") from None
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        raise TokenTemporalError("el archivo de token debe ser un archivo regular (no un enlace)")
+    if st.st_uid != os.getuid():
+        raise TokenTemporalError("el archivo de token pertenece a otro usuario")
+    if st.st_mode & 0o077:
+        raise TokenTemporalError("permisos inseguros en el archivo de token (se exige 600)")
+    if st.st_size > 8192:
+        raise TokenTemporalError("archivo de token demasiado grande")
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            datos = json.load(f)
+    except Exception:
+        raise TokenTemporalError("el archivo de token no es JSON válido") from None
+    if not isinstance(datos, dict):
+        raise TokenTemporalError("el archivo de token debe ser un objeto JSON")
+    sobrantes = sorted(set(datos) - _CLAVES_TOKEN)
+    if sobrantes:
+        raise TokenTemporalError(f"claves no admitidas en el archivo de token: {sobrantes}")
+    token = datos.get("access_token")
+    if not isinstance(token, str) or not _RE_TOKEN.fullmatch(token):
+        raise TokenTemporalError("falta access_token o su formato no es válido")
+    try:
+        expira = datetime.datetime.fromisoformat(str(datos.get("expira_utc", "")).replace("Z", "+00:00"))
+    except ValueError:
+        raise TokenTemporalError("falta expira_utc o no es una fecha ISO 8601") from None
+    if expira.tzinfo is None:
+        raise TokenTemporalError("expira_utc debe incluir la zona horaria")
+    ahora = ahora or datetime.datetime.now(datetime.timezone.utc)
+    if expira <= ahora + datetime.timedelta(seconds=MARGEN_CADUCIDAD_S):
+        raise TokenTemporalError("el token está vencido o a punto de vencer")
+    return token
+
 
 class VertexTunedProvider(ProveedorIA):
     """
@@ -158,6 +222,8 @@ class VertexTunedProvider(ProveedorIA):
 
     - Solo actúa con IA_VERTEX_HABILITADO=1 y GEMINI_TUNED_ENDPOINT=projects/<p>/locations/<us|eu>/endpoints/<id>.
     - Autenticación: credenciales predeterminadas de aplicación de Google (ADC); nunca claves en el código.
+      Alternativa EXPLÍCITA para pruebas: VERTEX_AUTENTICACION=token_archivo + VERTEX_TOKEN_ARCHIVO=<ruta 600>
+      (token de acceso de corta duración, sin renovación ni alternativa; ver `leer_token_temporal`).
     - Configuración de generación comprobada en el piloto: application/json, maxOutputTokens 8192 y
       thinkingLevel MINIMAL, sin temperatura ni esquema de respuesta.
     - UNA sola petición por análisis: sin reintentos ni proveedor alternativo.
@@ -166,6 +232,7 @@ class VertexTunedProvider(ProveedorIA):
     nombre = "vertex_tuned"
     formato_entrada = "exp-entrada-1"       # el analizador le entrega la plantilla v1 + la entrada exportada
     valida_privacidad_salida = True         # el analizador valida además la privacidad de la respuesta
+    valida_sustento_impactos = True         # y que un impacto «ninguno» tenga sustento estructurado (sustento.py)
     TIMEOUT_S = 120
     GENERACION = {"responseMimeType": "application/json", "maxOutputTokens": 8192,
                   "thinkingConfig": {"thinkingLevel": "MINIMAL"}}
@@ -173,6 +240,8 @@ class VertexTunedProvider(ProveedorIA):
     def __init__(self):
         self._endpoint = os.environ.get("GEMINI_TUNED_ENDPOINT", "").strip()
         self._habilitado = os.environ.get("IA_VERTEX_HABILITADO", "").strip() == "1"
+        self._modo_auth = os.environ.get("VERTEX_AUTENTICACION", "").strip() or "adc"
+        self._token_archivo = os.environ.get("VERTEX_TOKEN_ARCHIVO", "").strip()
         self._modelo = self._endpoint or "vertex_tuned:no_configurado"
 
     def error_configuracion(self):
@@ -182,6 +251,10 @@ class VertexTunedProvider(ProveedorIA):
             return "configuración incompleta: falta GEMINI_TUNED_ENDPOINT"
         if not _RE_ENDPOINT_VERTEX.fullmatch(self._endpoint):
             return "configuración inválida: GEMINI_TUNED_ENDPOINT debe ser projects/<p>/locations/<us|eu>/endpoints/<id>"
+        if self._modo_auth not in MODOS_AUTENTICACION:
+            return f"configuración inválida: VERTEX_AUTENTICACION debe ser uno de {list(MODOS_AUTENTICACION)}"
+        if self._modo_auth == "token_archivo" and not self._token_archivo:
+            return "configuración incompleta: VERTEX_AUTENTICACION=token_archivo exige VERTEX_TOKEN_ARCHIVO"
         return None
 
     def url(self):
@@ -191,8 +264,9 @@ class VertexTunedProvider(ProveedorIA):
     def cuerpo(self, texto):
         return {"contents": [{"role": "user", "parts": [{"text": texto}]}], "generationConfig": dict(self.GENERACION)}
 
-    @staticmethod
-    def _token():
+    def _token(self):
+        if self._modo_auth == "token_archivo":      # sin renovación ni vuelta al ADC
+            return leer_token_temporal(self._token_archivo)
         import google.auth                          # import perezoso
         import google.auth.transport.requests
         credenciales, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
@@ -208,6 +282,8 @@ class VertexTunedProvider(ProveedorIA):
             return self._fallo(err)
         try:
             token = self._token()
+        except TokenTemporalError as e:             # mensaje propio, sin el token ni el contenido del archivo
+            return self._fallo(f"token temporal no utilizable: {e}")
         except Exception as e:                      # sin ADC, sin permisos, sin red: un único intento
             return self._fallo(f"credenciales predeterminadas de aplicación no disponibles ({type(e).__name__})")
         peticion = urllib.request.Request(

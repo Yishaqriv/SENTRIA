@@ -65,6 +65,10 @@ class _ProveedorContado(proveedores.ProveedorIA):
         self._agent_id = str(agent_id)
         self.nombre = inner.nombre
         self.llamadas = 0
+        # Capacidades del proveedor real que el analizador consulta (formato de entrada y validaciones extra).
+        for atributo in ("formato_entrada", "valida_privacidad_salida", "valida_sustento_impactos", "_modelo"):
+            if hasattr(inner, atributo):
+                setattr(self, atributo, getattr(inner, atributo))
 
     def _prompt_sospechoso(self, prompt):
         p = str(prompt)
@@ -207,10 +211,13 @@ def _nivel_int_local(valor):
         return None
 
 
+PROVEEDORES_DIRIGIDOS = ("gemini_developer", "vertex_tuned")
+
+
 def procesar_una_por_opensearch_id(opensearch_id, agent_id, *,
                                    get_uno=get_alert_by_id,
                                    obtener_proveedor=proveedores.obtener_proveedor,
-                                   log=lambda _s: None):
+                                   log=lambda _s: None, proveedor="gemini_developer"):
     """
     Análisis DIRIGIDO por el `_id` exacto de OpenSearch (checkpoint 2G.3).
 
@@ -225,6 +232,8 @@ def procesar_una_por_opensearch_id(opensearch_id, agent_id, *,
     """
     opensearch_id = str(opensearch_id or "").strip()
     agent_id = str(agent_id or "").strip()
+    if proveedor not in PROVEEDORES_DIRIGIDOS:
+        raise CommandError(f"--proveedor debe ser uno de {list(PROVEEDORES_DIRIGIDOS)}.")
     if not opensearch_id:
         raise CommandError("--opensearch-id vacío.")
     if not agent_id:
@@ -271,14 +280,21 @@ def procesar_una_por_opensearch_id(opensearch_id, agent_id, *,
             f"Política: documento NO elegible ({decision.motivo_omision}). "
             f"No se llama a Gemini.")
 
-    key = "PRESENTE" if os.environ.get('GEMINI_API_KEY') else "AUSENTE"
-    log(f"Agente {agent_id} -> activo {activo.identificador}. "
-        f"opensearch_id validado. GEMINI_API_KEY: {key}. proveedor: gemini_developer. tope: 1 llamada.")
-    if key != "PRESENTE":
-        raise CommandError("GEMINI_API_KEY ausente: no se ejecuta.")
-    inner = obtener_proveedor('gemini_developer')
+    if proveedor == "gemini_developer":
+        key = "PRESENTE" if os.environ.get('GEMINI_API_KEY') else "AUSENTE"
+        log(f"Agente {agent_id} -> activo {activo.identificador}. "
+            f"opensearch_id validado. GEMINI_API_KEY: {key}. proveedor: gemini_developer. tope: 1 llamada.")
+        if key != "PRESENTE":
+            raise CommandError("GEMINI_API_KEY ausente: no se ejecuta.")
+    inner = obtener_proveedor(proveedor)
     if inner is None:
-        raise CommandError("Proveedor gemini_developer no disponible.")
+        raise CommandError(f"Proveedor {proveedor} no disponible.")
+    if proveedor == "vertex_tuned":
+        err = inner.error_configuracion()          # desactivado o mal configurado: no se llama
+        if err:
+            raise CommandError(f"vertex_tuned no utilizable: {err}. No se llama al modelo.")
+        log(f"Agente {agent_id} -> activo {activo.identificador}. opensearch_id validado. "
+            f"proveedor: vertex_tuned. tope: 1 llamada.")
     prov = _ProveedorContado(inner, tope=1, agent_id=agent_id)
 
     def _resolver(alert):
@@ -294,7 +310,7 @@ def procesar_una_por_opensearch_id(opensearch_id, agent_id, *,
         opensearch_id=opensearch_id, agent_id=agent_id, activo=activo.identificador,
         accion=accion, alert_id=obj.id, estado_analisis=obj.estado_analisis,
         veredicto_ia=obj.veredicto_ia or "", riesgo_ia=obj.riesgo_ia or "",
-        llamadas_reales=prov.llamadas, nivel=nivel,
+        llamadas_reales=prov.llamadas, nivel=nivel, proveedor=proveedor,
     )
 
 
@@ -310,6 +326,10 @@ class Command(BaseCommand):
         parser.add_argument('--opensearch-id', dest='opensearch_id', default=None,
                             help="análisis DIRIGIDO por `_id` exacto de OpenSearch. Exige --confirmar "
                                  "y --agent-id; tope absoluto de 1 llamada real.")
+        parser.add_argument('--proveedor', dest='proveedor', default='gemini_developer',
+                            choices=['gemini_developer', 'vertex_tuned'],
+                            help="solo con --opensearch-id: proveedor del análisis dirigido (por defecto "
+                                 "gemini_developer). vertex_tuned exige además IA_VERTEX_HABILITADO=1 y su configuración.")
         parser.add_argument('--dry-run', action='store_true')
         parser.add_argument('--confirmar', action='store_true')
 
@@ -320,12 +340,13 @@ class Command(BaseCommand):
             if not conf or dry:
                 raise CommandError("--opensearch-id exige --confirmar (y no admite --dry-run).")
             r = procesar_una_por_opensearch_id(
-                o['opensearch_id'], o['agent_id'], log=self.stdout.write)
+                o['opensearch_id'], o['agent_id'], log=self.stdout.write, proveedor=o['proveedor'])
             self.stdout.write("")
             self.stdout.write(self.style.SUCCESS("=== Resultado dirigido (categorías sanitizadas) ==="))
             self.stdout.write(f"  opensearch_id:            {r['opensearch_id']}")
             self.stdout.write(f"  agente / activo:          {r['agent_id']} / {r['activo']}")
             self.stdout.write(f"  nivel Wazuh:              {r['nivel']}")
+            self.stdout.write(f"  proveedor:                {r['proveedor']}")
             self.stdout.write(f"  acción de ingesta:        {r['accion']}")
             self.stdout.write(f"  fila MySQL (id):          {r['alert_id']}")
             self.stdout.write(f"  llamadas reales a Gemini: {r['llamadas_reales']}  (tope 1)")
@@ -334,6 +355,8 @@ class Command(BaseCommand):
             self.stdout.write(f"  riesgo_ia:                {r['riesgo_ia']}")
             return
 
+        if o['proveedor'] != 'gemini_developer':
+            raise CommandError("--proveedor solo se admite junto con --opensearch-id (análisis dirigido).")
         if dry == conf:
             raise CommandError("Usa exactamente uno: --dry-run o --confirmar.")
         if o['scan_limit'] > SCAN_LIMIT_MAX:
