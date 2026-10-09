@@ -11,6 +11,11 @@ Puente entre Wazuh y SENTRIA.
   veredicto.
 
 Este módulo NO crea ningún cliente de red al importarse.
+
+TLS del indexador: TODA consulta exige la huella SHA-256 del certificado de Wazuh
+(`tls_huella` explícita o la variable de entorno WAZUH_TLS_SHA256). Se comprueba
+tras el handshake y antes de enviar credenciales o consultas; si falta o no
+coincide, la consulta falla. No hay alternativa sin verificar.
 """
 import os
 import re
@@ -73,6 +78,33 @@ class _AdaptadorHuellaTLS(requests.adapters.HTTPAdapter):
         return super().init_poolmanager(*args, **kw)
 
 
+class IndexadorTLSError(RuntimeError):
+    """No hay una huella TLS válida del indexador: no se envía nada."""
+
+
+def _huella_indexador(tls_huella=None):
+    """Huella explícita o, si no se indica, la de WAZUH_TLS_SHA256 (configuración local del proceso)."""
+    huella = str(tls_huella if tls_huella is not None else os.environ.get("WAZUH_TLS_SHA256", "")).strip().lower()
+    if not huella:
+        raise IndexadorTLSError("falta la huella TLS del indexador (WAZUH_TLS_SHA256): "
+                                "no se envían credenciales a Wazuh sin verificar el certificado")
+    if not _RE_HUELLA_TLS.fullmatch(huella):
+        raise IndexadorTLSError("huella TLS del indexador inválida: se espera el SHA-256 de 64 hex del certificado")
+    return huella
+
+
+def _consultar_indexador(query, *, timeout, tls_huella=None):
+    """Único `GET .../_search` al indexador: siempre con la huella fijada (ver docstring del módulo)."""
+    huella = _huella_indexador(tls_huella)
+    try:
+        sesion = sesion_indexador_fijada(huella)
+    except ValueError as e:
+        raise IndexadorTLSError(str(e)) from None
+    with sesion:
+        return sesion.get(f"{WAZUH_URL}/{INDEX_NAME}/_search", auth=(INDEXER_USER, INDEXER_PASS),
+                          json=query, verify=False, timeout=timeout)
+
+
 def sesion_indexador_fijada(huella):
     """
     Sesión `requests` para el indexador con huella fijada. Sin proxies del entorno (`trust_env=False`), para que
@@ -97,12 +129,10 @@ def get_latest_alerts(size=1, agent_id=None, min_level=None, tls_huella=None):
       único agente). `agent.id` es capa privada (P).
     - `min_level`: pre-filtra por `rule.level >= min_level` en el propio
       OpenSearch (optimización; la política vuelve a comprobar el nivel).
-    - `tls_huella`: SHA-256 del certificado del indexador. Si se indica, la
-      conexión solo continúa (y solo entonces se envían las credenciales) si
-      el certificado coincide. Sin ella, la ruta heredada no verifica TLS.
+    - `tls_huella`: SHA-256 del certificado del indexador; si no se indica, se
+      usa WAZUH_TLS_SHA256. La conexión solo continúa (y solo entonces se
+      envían las credenciales) si el certificado coincide.
     """
-    url = f"{WAZUH_URL}/{INDEX_NAME}/_search"
-
     query = {
         "size": size,
         "sort": [{"@timestamp": {"order": "desc"}}],
@@ -116,14 +146,8 @@ def get_latest_alerts(size=1, agent_id=None, min_level=None, tls_huella=None):
     if filtros:
         query["query"] = {"bool": {"filter": filtros}}
 
-    if tls_huella is not None:
-        with sesion_indexador_fijada(tls_huella) as sesion:
-            response = sesion.get(url, auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=15)
-            response.raise_for_status()
-    else:
-        response = requests.get(
-            url, auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=15
-        )
+    response = _consultar_indexador(query, timeout=15, tls_huella=tls_huella)
+    response.raise_for_status()
 
     data = response.json()
     hits = data.get("hits", {}).get("hits", [])
@@ -247,11 +271,8 @@ def _normalizar_hit(hit):
 
 
 def _get_search(query, timeout=15):
-    """Único `GET .../_search` para lecturas por `_id` (solo lectura)."""
-    return requests.get(
-        f"{WAZUH_URL}/{INDEX_NAME}/_search",
-        auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=timeout,
-    )
+    """`GET .../_search` para lecturas por `_id` (solo lectura), con la huella TLS fijada."""
+    return _consultar_indexador(query, timeout=timeout)
 
 
 def _query_por_ids(opensearch_ids, agent_id=None):

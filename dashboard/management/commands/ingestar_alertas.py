@@ -53,7 +53,7 @@ from dashboard.models import Alert
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
-from sentria_backend import get_latest_alerts, get_alert_by_id
+from sentria_backend import IndexadorTLSError, get_latest_alerts, get_alert_by_id
 
 MAX_ANALISIS_ABS = 3        # tope absoluto de llamadas a Gemini por ejecución
 SCAN_LIMIT_DEFAULT = 100
@@ -116,6 +116,11 @@ class _ProveedorContado(proveedores.ProveedorIA):
                     ok=False, texto="", modelo="", error=f"piloto: {e}")
         self.llamadas += 1
         return self._inner.analizar(prompt)
+
+
+def _motivo_indexador(exc):
+    """Motivo sanitizado: el mensaje propio de la huella TLS (sin secretos); en otro caso, solo el tipo."""
+    return f"{type(exc).__name__}: {exc}" if isinstance(exc, IndexadorTLSError) else type(exc).__name__
 
 
 PROVEEDORES_ADMITIDOS = ("gemini_developer", "vertex_tuned")
@@ -238,12 +243,14 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
     get_alertas = get_alertas or get_latest_alerts      # resuelto al llamar (sustituible en pruebas)
     log(f"Fuente: indexador Wazuh, lectura ACTUAL de hasta {scan_limit} alertas más recientes del agente "
         f"(nivel >= {politica.nivel_minimo}). {'Ensayo: sin modelo, sin token y sin escrituras.' if dry else ''}")
-    log(f"TLS del indexador: {'huella SHA-256 fijada ' + tls_huella[:16] + '… (se comprueba antes de enviar credenciales)' if tls_huella else 'SIN verificar (ruta heredada, verify=False)'}.")
+    log(f"TLS del indexador: huella SHA-256 fijada "
+        f"{(tls_huella[:16] + '…') if tls_huella else '(WAZUH_TLS_SHA256 del entorno)'}; "
+        f"se comprueba antes de enviar credenciales y, si falta o no coincide, no se consulta.")
     extra = {"tls_huella": tls_huella} if tls_huella else {}
     try:
         crudas = get_alertas(size=scan_limit, agent_id=agent_id, min_level=politica.nivel_minimo, **extra)
     except Exception as exc:
-        raise CommandError(f"No se pudo consultar el indexador Wazuh: {type(exc).__name__}")
+        raise CommandError(f"No se pudo consultar el indexador Wazuh: {_motivo_indexador(exc)}")
 
     def _resolver(alert):
         if str(alert.get('agent_id') or '').strip() != agent_id:
@@ -391,7 +398,7 @@ def procesar_una_por_opensearch_id(opensearch_id, agent_id, *,
     try:
         raw = get_uno(opensearch_id)
     except Exception as exc:
-        raise CommandError(f"No se pudo consultar el indexador Wazuh: {type(exc).__name__}")
+        raise CommandError(f"No se pudo consultar el indexador Wazuh: {_motivo_indexador(exc)}")
     if raw is None:
         raise CommandError("El documento solicitado no existe en Wazuh. Abortado.")
 

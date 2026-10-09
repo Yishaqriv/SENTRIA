@@ -6665,6 +6665,95 @@ class PilotoReservaExplicitaTests(_PilotoBase, TestCase):
 
 
 
+class _ServidorTLSPrueba:
+    """
+    Servidor TLS LOCAL de prueba (127.0.0.1, certificado autofirmado generado al vuelo) que atiende `n` conexiones,
+    guarda los bytes HTTP recibidos en cada una y responde `{"hits": {"hits": []}}`. Sin red externa.
+    `indexador()` apunta sentria_backend a este servidor con credenciales de prueba.
+    """
+    def __init__(self, n):
+        self.n, self.recibido = n, []
+
+    def __enter__(self):
+        import socket, ssl, threading
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+        self._dir = tempfile.mkdtemp(prefix="sentria-tls-test-")
+        clave = ec.generate_private_key(ec.SECP256R1())
+        nombre = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "indexador-prueba")])
+        ahora = datetime.datetime.now(datetime.timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(nombre).issuer_name(nombre).public_key(clave.public_key())
+                .serial_number(x509.random_serial_number()).not_valid_before(ahora - datetime.timedelta(minutes=5))
+                .not_valid_after(ahora + datetime.timedelta(hours=1)).sign(clave, hashes.SHA256()))
+        self.huella = hashlib.sha256(cert.public_bytes(serialization.Encoding.DER)).hexdigest()
+        cpem, kpem = os.path.join(self._dir, "c.pem"), os.path.join(self._dir, "k.pem")
+        open(cpem, "wb").write(cert.public_bytes(serialization.Encoding.PEM))
+        open(kpem, "wb").write(clave.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                   serialization.NoEncryption()))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cpem, kpem)
+        self._srv = socket.socket()
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(self.n)
+        self._srv.settimeout(10)
+        self.url = f"https://127.0.0.1:{self._srv.getsockname()[1]}"
+
+        def servir():
+            for _ in range(self.n):
+                try:
+                    conn, _a = self._srv.accept()
+                except OSError:
+                    return
+                try:
+                    tls = ctx.wrap_socket(conn, server_side=True)
+                    tls.settimeout(5)
+                    datos = b""
+                    try:
+                        while b"\r\n\r\n" not in datos:
+                            trozo = tls.recv(4096)
+                            if not trozo:
+                                break
+                            datos += trozo
+                        cab, _sep, resto = datos.partition(b"\r\n\r\n")
+                        largo = next((int(l.split(b":", 1)[1]) for l in cab.split(b"\r\n")
+                                      if l.lower().startswith(b"content-length:")), 0)
+                        while len(resto) < largo:                  # leer el cuerpo entero antes de responder
+                            trozo = tls.recv(4096)
+                            if not trozo:
+                                break
+                            resto += trozo
+                    except (ssl.SSLError, OSError):
+                        pass
+                    self.recibido.append(datos)
+                    if datos:
+                        cuerpo = b'{"hits": {"hits": []}}'
+                        tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                                    + str(len(cuerpo)).encode() + b"\r\nConnection: close\r\n\r\n" + cuerpo)
+                    tls.close()
+                except (ssl.SSLError, OSError):
+                    self.recibido.append(b"")
+                    conn.close()
+
+        self._hilo = threading.Thread(target=servir, daemon=True)
+        self._hilo.start()
+        return self
+
+    def indexador(self):
+        import contextlib
+        import sentria_backend as sb
+        pila = contextlib.ExitStack()
+        for nombre, valor in (("WAZUH_URL", self.url), ("INDEXER_USER", "usuario-prueba"), ("INDEXER_PASS", "clave-prueba")):
+            pila.enter_context(mock.patch.object(sb, nombre, valor))
+        return pila
+
+    def __exit__(self, *exc):
+        self._hilo.join(10)
+        self._srv.close()
+        __import__("shutil").rmtree(self._dir, ignore_errors=True)
+
+
 class IndexadorTLSFijadoTests(_PilotoBase, TestCase):
     """El piloto no envía credenciales a Wazuh sin verificar TLS: huella SHA-256 del certificado fijada."""
 
@@ -6703,78 +6792,15 @@ class IndexadorTLSFijadoTests(_PilotoBase, TestCase):
 
     def test_huella_distinta_no_envia_credenciales(self):
         """Servidor TLS local de prueba (127.0.0.1, certificado autofirmado generado en la prueba)."""
-        import socket, ssl, threading, requests
-        from cryptography import x509
-        from cryptography.hazmat.primitives import hashes, serialization
-        from cryptography.hazmat.primitives.asymmetric import ec
-        from cryptography.x509.oid import NameOID
+        import requests
         import sentria_backend as sb
-        clave = ec.generate_private_key(ec.SECP256R1())
-        nombre = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "indexador-prueba")])
-        ahora = datetime.datetime.now(datetime.timezone.utc)
-        cert = (x509.CertificateBuilder().subject_name(nombre).issuer_name(nombre).public_key(clave.public_key())
-                .serial_number(x509.random_serial_number()).not_valid_before(ahora - datetime.timedelta(minutes=5))
-                .not_valid_after(ahora + datetime.timedelta(hours=1)).sign(clave, hashes.SHA256()))
-        der = cert.public_bytes(serialization.Encoding.DER)
-        huella_ok = hashlib.sha256(der).hexdigest()
-        cpem, kpem = os.path.join(self.dir, "c.pem"), os.path.join(self.dir, "k.pem")
-        open(cpem, "wb").write(cert.public_bytes(serialization.Encoding.PEM))
-        open(kpem, "wb").write(clave.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                                   serialization.NoEncryption()))
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(cpem, kpem)
-        srv = socket.socket()
-        srv.bind(("127.0.0.1", 0))
-        srv.listen(2)
-        srv.settimeout(10)
-        self.addCleanup(srv.close)
-        recibido = []
-
-        def servir(n):
-            for _ in range(n):
-                conn, _a = srv.accept()
-                try:
-                    tls = ctx.wrap_socket(conn, server_side=True)
-                    tls.settimeout(5)
-                    datos = b""
-                    try:
-                        while b"\r\n\r\n" not in datos:
-                            trozo = tls.recv(4096)
-                            if not trozo:
-                                break
-                            datos += trozo
-                        cab, _sep, resto = datos.partition(b"\r\n\r\n")
-                        largo = next((int(l.split(b":", 1)[1]) for l in cab.split(b"\r\n")
-                                      if l.lower().startswith(b"content-length:")), 0)
-                        while len(resto) < largo:                  # leer el cuerpo entero antes de responder
-                            trozo = tls.recv(4096)
-                            if not trozo:
-                                break
-                            resto += trozo
-                    except (ssl.SSLError, OSError):
-                        pass
-                    recibido.append(datos)
-                    if datos:
-                        cuerpo = b'{"hits": {"hits": []}}'
-                        tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
-                                    + str(len(cuerpo)).encode() + b"\r\nConnection: close\r\n\r\n" + cuerpo)
-                    tls.close()
-                except (ssl.SSLError, OSError):
-                    recibido.append(b"")
-                    conn.close()
-
-        hilo = threading.Thread(target=servir, args=(2,), daemon=True)
-        hilo.start()
-        url = f"https://127.0.0.1:{srv.getsockname()[1]}"
-        with mock.patch.object(sb, "WAZUH_URL", url), mock.patch.object(sb, "INDEXER_USER", "usuario-prueba"), \
-                mock.patch.object(sb, "INDEXER_PASS", "clave-prueba"):
+        with _ServidorTLSPrueba(2) as srv, srv.indexador():
             with self.assertRaises(requests.exceptions.SSLError):
                 sb.get_latest_alerts(size=1, agent_id="001", tls_huella="cd" * 32)        # huella distinta
-            self.assertEqual(sb.get_latest_alerts(size=1, agent_id="001", tls_huella=huella_ok), [])
-        hilo.join(10)
-        self.assertEqual(len(recibido), 2)
-        self.assertEqual(recibido[0], b"")                                 # nada (ni credenciales) tras el handshake
-        self.assertIn(b"Authorization: Basic", recibido[1])                # con la huella correcta sí se envía
+            self.assertEqual(sb.get_latest_alerts(size=1, agent_id="001", tls_huella=srv.huella), [])
+        self.assertEqual(len(srv.recibido), 2)
+        self.assertEqual(srv.recibido[0], b"")                             # nada (ni credenciales) tras el handshake
+        self.assertIn(b"Authorization: Basic", srv.recibido[1])            # con la huella correcta sí se envía
 
 
 # --------------------------------------------------------------------------
@@ -6854,3 +6880,58 @@ class EquipoPersonalHorarioSinRestriccionTests(TestCase):
         body = self.client.get(reverse("index")).content.decode()
         self.assertIn("horario sin restricción", body)
         self.assertIn("Equipo personal", body)
+
+
+
+class IndexadorTLSRutasDashboardYDirigidaTests(TestCase):
+    """Huella TLS obligatoria también en «Actualizar» (get_latest_alerts) y en la lectura por _id (dirigida/reintento)."""
+
+    def setUp(self):
+        os.environ.pop("WAZUH_TLS_SHA256", None)
+
+    def test_sin_huella_no_se_conecta(self):
+        import sentria_backend as sb
+        with mock.patch.dict(os.environ, {}, clear=False), mock.patch("sentria_backend.requests.Session") as ses:
+            os.environ.pop("WAZUH_TLS_SHA256", None)
+            for llamada in (lambda: sb.get_latest_alerts(size=1), lambda: sb.get_alert_by_id("X"),
+                            lambda: sb.get_alerts_by_ids(["X"])):
+                with self.assertRaises(sb.IndexadorTLSError):
+                    llamada()
+            with mock.patch.dict(os.environ, {"WAZUH_TLS_SHA256": "no-es-hex"}):
+                with self.assertRaises(sb.IndexadorTLSError):
+                    sb.get_alert_by_id("X")
+        self.assertFalse(ses.called)                                        # ni siquiera se abre una sesión
+
+    def test_lectura_por_id_con_huella_del_entorno(self):
+        import requests
+        import sentria_backend as sb
+        with _ServidorTLSPrueba(2) as srv, srv.indexador():
+            with mock.patch.dict(os.environ, {"WAZUH_TLS_SHA256": "cd" * 32}):
+                with self.assertRaises(requests.exceptions.SSLError):
+                    sb.get_alert_by_id("DOC-1", agent_id="001")
+            with mock.patch.dict(os.environ, {"WAZUH_TLS_SHA256": srv.huella.upper()}):
+                self.assertIsNone(sb.get_alert_by_id("DOC-1", agent_id="001"))     # leído: 0 hits
+        self.assertEqual(srv.recibido[0], b"")
+        self.assertIn(b"Authorization: Basic", srv.recibido[1])
+
+    def test_actualizar_sin_huella_falla_claramente_sin_ingestar(self):
+        u = User.objects.create_user("tlsu", password="p")                  # ANALISTA
+        self.client.force_login(u)
+        with mock.patch("dashboard.views.ingestar_lote") as ing, mock.patch("sentria_backend.requests.Session") as ses:
+            r = self.client.post(reverse("update_alerts"), follow=True)
+        self.assertFalse(ing.called)
+        self.assertFalse(ses.called)
+        self.assertContains(r, "huella TLS del indexador")
+
+    def test_comando_dirigido_y_lotes_sin_huella(self):
+        asignar_agente("000", _activo_real().identificador)
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "k", "GEMINI_MODEL": "m"}), \
+                mock.patch("sentria_backend.requests.Session") as ses:
+            with self.assertRaises(_CommandError) as e1:
+                procesar_una_por_opensearch_id("DOC-1", "000", obtener_proveedor=lambda _n: _ProveedorFake())
+            with self.assertRaises(_CommandError) as e2:
+                procesar_ingesta_controlada("000", scan_limit=5, max_analisis=1, dry=True, conf=False)
+        self.assertIn("huella TLS", str(e1.exception))
+        self.assertIn("huella TLS", str(e2.exception))
+        self.assertFalse(ses.called)
+        self.assertEqual(Alert.objects.count(), 0)
