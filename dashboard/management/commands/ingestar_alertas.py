@@ -167,7 +167,7 @@ def _preparar_proveedor(proveedor, *, conf, tope, agent_id, obtener_proveedor, l
 
 
 def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf, proveedor="gemini_developer",
-                                registro=None, reserva=None,
+                                registro=None, reserva=None, tls_huella=None,
                                 get_alertas=None,
                                 obtener_proveedor=proveedores.obtener_proveedor,
                                 log=lambda _s: None):
@@ -204,6 +204,9 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
     if registro is not None:
         if reserva is None:
             raise CommandError("El piloto exige el manifiesto de reserva (--reserva y --reserva-sello).")
+        if not tls_huella:
+            raise CommandError("El piloto exige verificar TLS del indexador (--wazuh-tls-sha256): "
+                               "no se envían credenciales a Wazuh sin verificación.")
         if registro.agente != agent_id or registro.proveedor != proveedor:
             raise CommandError("El registro del piloto es de otro agente o de otro proveedor. Abortado.")
         analizadas = Alert.objects.filter(
@@ -235,8 +238,10 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
     get_alertas = get_alertas or get_latest_alerts      # resuelto al llamar (sustituible en pruebas)
     log(f"Fuente: indexador Wazuh, lectura ACTUAL de hasta {scan_limit} alertas más recientes del agente "
         f"(nivel >= {politica.nivel_minimo}). {'Ensayo: sin modelo, sin token y sin escrituras.' if dry else ''}")
+    log(f"TLS del indexador: {'huella SHA-256 fijada ' + tls_huella[:16] + '… (se comprueba antes de enviar credenciales)' if tls_huella else 'SIN verificar (ruta heredada, verify=False)'}.")
+    extra = {"tls_huella": tls_huella} if tls_huella else {}
     try:
-        crudas = get_alertas(size=scan_limit, agent_id=agent_id, min_level=politica.nivel_minimo)
+        crudas = get_alertas(size=scan_limit, agent_id=agent_id, min_level=politica.nivel_minimo, **extra)
     except Exception as exc:
         raise CommandError(f"No se pudo consultar el indexador Wazuh: {type(exc).__name__}")
 
@@ -475,6 +480,9 @@ class Command(BaseCommand):
                             help="con --piloto (obligatorio): ruta ABSOLUTA del manifiesto privado de reserva (600).")
         parser.add_argument('--reserva-sello', dest='reserva_sello', default=None,
                             help="con --piloto (obligatorio): SHA-256 esperado del manifiesto de reserva.")
+        parser.add_argument('--wazuh-tls-sha256', dest='wazuh_tls_sha256', default=None,
+                            help="SHA-256 (64 hex) del certificado del indexador: la conexión solo sigue, y solo "
+                                 "entonces se envían credenciales, si coincide. Obligatorio con --piloto.")
         parser.add_argument('--tope-total', dest='tope_total', type=int, default=piloto_mod.TOPE_TOTAL_MAX,
                             help=f"solo con --iniciar-piloto: intentos totales del piloto (máx {piloto_mod.TOPE_TOTAL_MAX}).")
         parser.add_argument('--dry-run', action='store_true')
@@ -484,7 +492,8 @@ class Command(BaseCommand):
         dry, conf = bool(o['dry_run']), bool(o['confirmar'])
 
         if o.get('opensearch_id'):
-            if o['piloto'] or o['iniciar_piloto'] or o['registro_piloto'] or o['reserva'] or o['reserva_sello']:
+            if o['piloto'] or o['iniciar_piloto'] or o['registro_piloto'] or o['reserva'] or o['reserva_sello'] \
+                    or o['wazuh_tls_sha256']:
                 raise CommandError("--opensearch-id no se combina con las opciones del piloto.")
             if not conf or dry:
                 raise CommandError("--opensearch-id exige --confirmar (y no admite --dry-run).")
@@ -522,6 +531,11 @@ class Command(BaseCommand):
             raise CommandError("--piloto y --registro-piloto van siempre juntos.")
         if o['piloto'] != bool(o['reserva']) or o['piloto'] != bool(o['reserva_sello']):
             raise CommandError("--piloto exige --reserva y --reserva-sello (y estas solo valen con --piloto).")
+        huella = (o['wazuh_tls_sha256'] or "").strip().lower() or None
+        if o['piloto'] and huella is None:
+            raise CommandError("--piloto exige --wazuh-tls-sha256: no se envían credenciales a Wazuh sin verificar TLS.")
+        if huella is not None and not re.fullmatch(r"[0-9a-f]{64}", huella):
+            raise CommandError("--wazuh-tls-sha256 debe ser el SHA-256 completo (64 hex) del certificado.")
         if dry == conf:
             raise CommandError("Usa exactamente uno: --dry-run o --confirmar.")
         if o['scan_limit'] > SCAN_LIMIT_MAX:
@@ -538,13 +552,13 @@ class Command(BaseCommand):
                     c = procesar_ingesta_controlada(
                         o['agent_id'], scan_limit=o['scan_limit'], max_analisis=o['max_analisis'],
                         dry=dry, conf=conf, proveedor=o['proveedor'], registro=registro, reserva=reserva,
-                        log=self.stdout.write)
+                        tls_huella=huella, log=self.stdout.write)
             except piloto_mod.RegistroPilotoError as e:
                 raise CommandError(f"Piloto: {e}.")
         else:
             c = procesar_ingesta_controlada(
                 o['agent_id'], scan_limit=o['scan_limit'], max_analisis=o['max_analisis'],
-                dry=dry, conf=conf, proveedor=o['proveedor'], log=self.stdout.write)
+                dry=dry, conf=conf, proveedor=o['proveedor'], tls_huella=huella, log=self.stdout.write)
 
         self.stdout.write("")
         self.stdout.write(self.style.SUCCESS("=== Resultado (categorías sanitizadas) ==="))

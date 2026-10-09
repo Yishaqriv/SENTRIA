@@ -6345,13 +6345,17 @@ class _PilotoBase:
                 "description": "sshd: brute force trying to get access to the system.", "groups": groups,
                 "timestamp": ts or self.futuro}
 
+    HUELLA = "ab" * 32
+
     def _correr(self, crudas, *, dry=False, conf=True, proveedor="vertex_tuned", registro=None, reserva=None,
-                env=_ENV_VERTEX, urlopen=None, token=None, obtener=None, log=None):
+                tls_huella=None, env=_ENV_VERTEX, urlopen=None, token=None, obtener=None, log=None):
         crudas = list(crudas)
         leido = []
+        self.kw_lectura = []
 
-        def get_alertas(size, agent_id, min_level):
+        def get_alertas(size, agent_id, min_level, **kw):
             leido.append(tok.call_count)           # cuántas comprobaciones de credencial había al leer Wazuh
+            self.kw_lectura.append(kw)
             return crudas[:size]
 
         with mock.patch.dict(os.environ, env), \
@@ -6363,7 +6367,7 @@ class _PilotoBase:
             try:
                 r = procesar_ingesta_controlada(
                     "000", scan_limit=100, max_analisis=3, dry=dry, conf=conf, proveedor=proveedor,
-                    registro=registro, reserva=reserva, get_alertas=get_alertas,
+                    registro=registro, reserva=reserva, tls_huella=tls_huella, get_alertas=get_alertas,
                     obtener_proveedor=obtener or proveedores.obtener_proveedor, log=log or (lambda _s: None))
             except _CommandError as e:
                 r = e
@@ -6390,6 +6394,7 @@ class _PilotoBase:
         return piloto_mod.ManifiestoReserva(*self._manifiesto(**kw))
 
     def _piloto(self, crudas, reserva=None, **kw):
+        kw.setdefault("tls_huella", self.HUELLA)
         with piloto_mod.RegistroPiloto(self.ruta) as reg:
             return self._correr(crudas, registro=reg, reserva=reserva or self._reserva(), **kw)
 
@@ -6657,3 +6662,116 @@ class PilotoReservaExplicitaTests(_PilotoBase, TestCase):
         self.assertLess(tipos.index("ejecucion"), tipos.index("intento"))  # constancia antes de llamar
         self.assertEqual(eventos[0]["clase_material"], "desarrollo")
         self.assertEqual(r["piloto"]["reserva_sello"], sello)
+
+
+
+class IndexadorTLSFijadoTests(_PilotoBase, TestCase):
+    """El piloto no envía credenciales a Wazuh sin verificar TLS: huella SHA-256 del certificado fijada."""
+
+    def test_piloto_exige_huella_y_la_pasa_a_la_lectura(self):
+        self._crear()
+        r, _, url, leido = self._piloto([self._doc(1)], tls_huella=None)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("TLS", str(r))
+        self.assertEqual((leido, url.call_count), ([], 0))
+        self._piloto([self._doc(1)], dry=True, conf=False)
+        self.assertEqual(self.kw_lectura, [{"tls_huella": self.HUELLA}])
+
+    def test_cli_piloto_sin_huella_o_huella_invalida(self):
+        self._crear()
+        man, sello = self._manifiesto()
+        base = ["ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", "--dry-run", "--piloto",
+                "--registro-piloto", self.ruta, "--reserva", man, "--reserva-sello", sello]
+        for extra in ([], ["--wazuh-tls-sha256", "abc"]):
+            with mock.patch("sentria_backend.requests") as req:
+                with self.assertRaises(_CommandError):
+                    call_command(*base, *extra, stdout=StringIO())
+            self.assertFalse(req.mock_calls)
+
+    def test_sesion_fijada_configura_huella_y_sin_proxies(self):
+        import sentria_backend as sb
+        with sb.sesion_indexador_fijada(self.HUELLA.upper()) as ses:
+            self.assertFalse(ses.trust_env)
+            ad = ses.get_adapter("https://localhost:9200/x")
+            self.assertEqual(ad.poolmanager.connection_pool_kw["assert_fingerprint"], self.HUELLA)
+        for mala in ("", "zz" * 32, "ab" * 31):
+            with self.assertRaises(ValueError):
+                sb.sesion_indexador_fijada(mala)
+        with mock.patch.object(sb, "WAZUH_URL", "http://localhost:9200"):
+            with self.assertRaises(ValueError):
+                sb.sesion_indexador_fijada(self.HUELLA)
+
+    def test_huella_distinta_no_envia_credenciales(self):
+        """Servidor TLS local de prueba (127.0.0.1, certificado autofirmado generado en la prueba)."""
+        import socket, ssl, threading, requests
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+        import sentria_backend as sb
+        clave = ec.generate_private_key(ec.SECP256R1())
+        nombre = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "indexador-prueba")])
+        ahora = datetime.datetime.now(datetime.timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(nombre).issuer_name(nombre).public_key(clave.public_key())
+                .serial_number(x509.random_serial_number()).not_valid_before(ahora - datetime.timedelta(minutes=5))
+                .not_valid_after(ahora + datetime.timedelta(hours=1)).sign(clave, hashes.SHA256()))
+        der = cert.public_bytes(serialization.Encoding.DER)
+        huella_ok = hashlib.sha256(der).hexdigest()
+        cpem, kpem = os.path.join(self.dir, "c.pem"), os.path.join(self.dir, "k.pem")
+        open(cpem, "wb").write(cert.public_bytes(serialization.Encoding.PEM))
+        open(kpem, "wb").write(clave.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                                   serialization.NoEncryption()))
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cpem, kpem)
+        srv = socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(2)
+        srv.settimeout(10)
+        self.addCleanup(srv.close)
+        recibido = []
+
+        def servir(n):
+            for _ in range(n):
+                conn, _a = srv.accept()
+                try:
+                    tls = ctx.wrap_socket(conn, server_side=True)
+                    tls.settimeout(5)
+                    datos = b""
+                    try:
+                        while b"\r\n\r\n" not in datos:
+                            trozo = tls.recv(4096)
+                            if not trozo:
+                                break
+                            datos += trozo
+                        cab, _sep, resto = datos.partition(b"\r\n\r\n")
+                        largo = next((int(l.split(b":", 1)[1]) for l in cab.split(b"\r\n")
+                                      if l.lower().startswith(b"content-length:")), 0)
+                        while len(resto) < largo:                  # leer el cuerpo entero antes de responder
+                            trozo = tls.recv(4096)
+                            if not trozo:
+                                break
+                            resto += trozo
+                    except (ssl.SSLError, OSError):
+                        pass
+                    recibido.append(datos)
+                    if datos:
+                        cuerpo = b'{"hits": {"hits": []}}'
+                        tls.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                                    + str(len(cuerpo)).encode() + b"\r\nConnection: close\r\n\r\n" + cuerpo)
+                    tls.close()
+                except (ssl.SSLError, OSError):
+                    recibido.append(b"")
+                    conn.close()
+
+        hilo = threading.Thread(target=servir, args=(2,), daemon=True)
+        hilo.start()
+        url = f"https://127.0.0.1:{srv.getsockname()[1]}"
+        with mock.patch.object(sb, "WAZUH_URL", url), mock.patch.object(sb, "INDEXER_USER", "usuario-prueba"), \
+                mock.patch.object(sb, "INDEXER_PASS", "clave-prueba"):
+            with self.assertRaises(requests.exceptions.SSLError):
+                sb.get_latest_alerts(size=1, agent_id="001", tls_huella="cd" * 32)        # huella distinta
+            self.assertEqual(sb.get_latest_alerts(size=1, agent_id="001", tls_huella=huella_ok), [])
+        hilo.join(10)
+        self.assertEqual(len(recibido), 2)
+        self.assertEqual(recibido[0], b"")                                 # nada (ni credenciales) tras el handshake
+        self.assertIn(b"Authorization: Basic", recibido[1])                # con la huella correcta sí se envía

@@ -13,6 +13,7 @@ Puente entre Wazuh y SENTRIA.
 Este módulo NO crea ningún cliente de red al importarse.
 """
 import os
+import re
 import sys
 
 import requests
@@ -55,13 +56,50 @@ from dashboard.ia.anonimizacion import (  # noqa: E402,F401
 )
 
 
-def get_latest_alerts(size=1, agent_id=None, min_level=None):
+_RE_HUELLA_TLS = re.compile(r"[0-9a-f]{64}")
+
+
+class _AdaptadorHuellaTLS(requests.adapters.HTTPAdapter):
+    """
+    Fija la huella SHA-256 (DER) del certificado del indexador. urllib3 la comprueba justo después del handshake
+    TLS y ANTES de enviar la petición: si no coincide, no sale ni la consulta ni la cabecera de credenciales.
+    """
+    def __init__(self, huella, **kw):
+        self._huella = huella
+        super().__init__(**kw)
+
+    def init_poolmanager(self, *args, **kw):
+        kw["assert_fingerprint"] = self._huella
+        return super().init_poolmanager(*args, **kw)
+
+
+def sesion_indexador_fijada(huella):
+    """
+    Sesión `requests` para el indexador con huella fijada. Sin proxies del entorno (`trust_env=False`), para que
+    ningún intermediario reciba las credenciales. El certificado de Wazuh es autofirmado y no hay CA legible: la
+    cadena no se valida (`verify=False` en la llamada) y la confianza la da la huella exacta del certificado.
+    """
+    huella = str(huella or "").strip().lower()
+    if not _RE_HUELLA_TLS.fullmatch(huella):
+        raise ValueError("huella TLS del indexador inválida: se espera el SHA-256 de 64 hex del certificado")
+    if not WAZUH_URL.lower().startswith("https://"):
+        raise ValueError("la huella TLS exige un WAZUH_URL https://")
+    sesion = requests.Session()
+    sesion.trust_env = False
+    sesion.mount("https://", _AdaptadorHuellaTLS(huella))
+    return sesion
+
+
+def get_latest_alerts(size=1, agent_id=None, min_level=None, tls_huella=None):
     """
     Consulta de SOLO LECTURA al indexador Wazuh. `GET .../_search`.
     - `agent_id`:  filtra por `agent.id` (la ingesta controlada procesa un
       único agente). `agent.id` es capa privada (P).
     - `min_level`: pre-filtra por `rule.level >= min_level` en el propio
       OpenSearch (optimización; la política vuelve a comprobar el nivel).
+    - `tls_huella`: SHA-256 del certificado del indexador. Si se indica, la
+      conexión solo continúa (y solo entonces se envían las credenciales) si
+      el certificado coincide. Sin ella, la ruta heredada no verifica TLS.
     """
     url = f"{WAZUH_URL}/{INDEX_NAME}/_search"
 
@@ -78,9 +116,14 @@ def get_latest_alerts(size=1, agent_id=None, min_level=None):
     if filtros:
         query["query"] = {"bool": {"filter": filtros}}
 
-    response = requests.get(
-        url, auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=15
-    )
+    if tls_huella is not None:
+        with sesion_indexador_fijada(tls_huella) as sesion:
+            response = sesion.get(url, auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=15)
+            response.raise_for_status()
+    else:
+        response = requests.get(
+            url, auth=(INDEXER_USER, INDEXER_PASS), json=query, verify=False, timeout=15
+        )
 
     data = response.json()
     hits = data.get("hits", {}).get("hits", [])
