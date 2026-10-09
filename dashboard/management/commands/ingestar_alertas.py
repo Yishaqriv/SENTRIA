@@ -24,11 +24,16 @@ Reglas duras:
     `exp-entrada-1`; sin reintentos ni proveedor alternativo.
 
 Piloto acotado (registro persistente, ver dashboard/ia/piloto.py):
-  python manage.py ingestar_alertas --agent-id 001 --proveedor vertex_tuned \
+  python manage.py ingestar_alertas --agent-id 001 --proveedor vertex_tuned \\
       --iniciar-piloto --registro-piloto /ruta/privada/piloto.jsonl
-  python manage.py ingestar_alertas --agent-id 001 --proveedor vertex_tuned \
-      --piloto --registro-piloto /ruta/privada/piloto.jsonl --dry-run | --confirmar
-  - Sólo alertas NUEVAS (sin fila en MySQL) con fecha >= inicio del piloto.
+  python manage.py ingestar_alertas --agent-id 001 --proveedor vertex_tuned \\
+      --piloto --registro-piloto /ruta/privada/piloto.jsonl \\
+      --reserva /ruta/privada/reserva.json --reserva-sello <sha256> --dry-run | --confirmar
+  - Sólo alertas NUEVAS (sin fila en MySQL) con fecha >= inicio del piloto y
+    fuera de los episodios y sesiones del manifiesto de reserva (obligatorio,
+    con sello verificado; su versión y huella quedan en el registro).
+  - --dry-run lee las alertas ACTUALES del indexador Wazuh (solo lectura) y
+    MySQL (solo lectura); no pide token, no llama al modelo, no escribe.
   - Máx. 3 intentos por ejecución y el tope total del registro (máx. 30); cada
     intento se registra en disco ANTES de llamar, también si la llamada falla.
 """
@@ -162,7 +167,7 @@ def _preparar_proveedor(proveedor, *, conf, tope, agent_id, obtener_proveedor, l
 
 
 def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf, proveedor="gemini_developer",
-                                registro=None,
+                                registro=None, reserva=None,
                                 get_alertas=None,
                                 obtener_proveedor=proveedores.obtener_proveedor,
                                 log=lambda _s: None):
@@ -197,6 +202,8 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
             f"(o está en IA_AGENTES_BLOQUEADOS). Nada que hacer.")
 
     if registro is not None:
+        if reserva is None:
+            raise CommandError("El piloto exige el manifiesto de reserva (--reserva y --reserva-sello).")
         if registro.agente != agent_id or registro.proveedor != proveedor:
             raise CommandError("El registro del piloto es de otro agente o de otro proveedor. Abortado.")
         analizadas = Alert.objects.filter(
@@ -209,6 +216,10 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
         if conf and registro.restantes <= 0:
             raise CommandError("Piloto: tope total agotado. No se llama al modelo.")
         max_analisis = min(max_analisis, registro.restantes)
+        log(f"Reserva: {reserva.version}, sello {reserva.sello[:16]}… verificado "
+            f"({reserva.n_episodios} episodios, {reserva.n_sesiones} sesiones).")
+        if conf:
+            registro.registrar_ejecucion(reserva, modo="confirmar")     # constancia antes de cualquier llamada
         log(f"Piloto: {registro.usados}/{registro.tope_total} intentos usados; "
             f"esta ejecución admite como máximo {max_analisis}.")
 
@@ -222,6 +233,8 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
     exige_representable = getattr(proveedores.PROVEEDORES.get(proveedor), "formato_entrada", None) == "exp-entrada-1"
 
     get_alertas = get_alertas or get_latest_alerts      # resuelto al llamar (sustituible en pruebas)
+    log(f"Fuente: indexador Wazuh, lectura ACTUAL de hasta {scan_limit} alertas más recientes del agente "
+        f"(nivel >= {politica.nivel_minimo}). {'Ensayo: sin modelo, sin token y sin escrituras.' if dry else ''}")
     try:
         crudas = get_alertas(size=scan_limit, agent_id=agent_id, min_level=politica.nivel_minimo)
     except Exception as exc:
@@ -237,7 +250,7 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
              elegibles=0, elegibles_seleccionadas=0, elegibles_no_seleccionadas=0,
              procedencia_completada=0, completed=0, analisis_fallido=0,
              falso_positivo=0, requiere_atencion=0,
-             no_representables=0, ya_existentes=0, anteriores_al_piloto=0, seleccion=[])
+             no_representables=0, ya_existentes=0, anteriores_al_piloto=0, reservadas=0, seleccion=[])
 
     for raw in crudas:
         c['candidatas'] += 1
@@ -253,7 +266,10 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
             momento = _parsear_ts(raw.get('timestamp'))
             if momento is not None and momento.tzinfo is None:
                 momento = momento.replace(tzinfo=datetime.timezone.utc)
-            if momento is None or momento < registro.inicio_utc:
+            if reserva.reservada(agent_id, momento):      # exclusión EXPLÍCITA (sin fecha también se excluye)
+                c['reservadas'] += 1
+                continue
+            if momento < registro.inicio_utc:
                 c['anteriores_al_piloto'] += 1
                 continue
         elif existente is not None and existente.estado_analisis == 'COMPLETED':
@@ -317,7 +333,8 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
     c['modo'] = 'dry-run' if dry else 'confirmar'
     c['proveedor'] = proveedor
     if registro is not None:
-        c['piloto'] = {"usados": registro.usados, "restantes": registro.restantes, "tope_total": registro.tope_total}
+        c['piloto'] = {"usados": registro.usados, "restantes": registro.restantes, "tope_total": registro.tope_total,
+                       "reserva_version": reserva.version, "reserva_sello": reserva.sello}
     return c
 
 
@@ -454,6 +471,10 @@ class Command(BaseCommand):
         parser.add_argument('--iniciar-piloto', action='store_true',
                             help="crea el registro del piloto (falla si ya existe) y termina: no lee Wazuh ni llama "
                                  "al modelo.")
+        parser.add_argument('--reserva', dest='reserva', default=None,
+                            help="con --piloto (obligatorio): ruta ABSOLUTA del manifiesto privado de reserva (600).")
+        parser.add_argument('--reserva-sello', dest='reserva_sello', default=None,
+                            help="con --piloto (obligatorio): SHA-256 esperado del manifiesto de reserva.")
         parser.add_argument('--tope-total', dest='tope_total', type=int, default=piloto_mod.TOPE_TOTAL_MAX,
                             help=f"solo con --iniciar-piloto: intentos totales del piloto (máx {piloto_mod.TOPE_TOTAL_MAX}).")
         parser.add_argument('--dry-run', action='store_true')
@@ -463,7 +484,7 @@ class Command(BaseCommand):
         dry, conf = bool(o['dry_run']), bool(o['confirmar'])
 
         if o.get('opensearch_id'):
-            if o['piloto'] or o['iniciar_piloto'] or o['registro_piloto']:
+            if o['piloto'] or o['iniciar_piloto'] or o['registro_piloto'] or o['reserva'] or o['reserva_sello']:
                 raise CommandError("--opensearch-id no se combina con las opciones del piloto.")
             if not conf or dry:
                 raise CommandError("--opensearch-id exige --confirmar (y no admite --dry-run).")
@@ -499,6 +520,8 @@ class Command(BaseCommand):
             return
         if o['piloto'] != bool(o['registro_piloto']):
             raise CommandError("--piloto y --registro-piloto van siempre juntos.")
+        if o['piloto'] != bool(o['reserva']) or o['piloto'] != bool(o['reserva_sello']):
+            raise CommandError("--piloto exige --reserva y --reserva-sello (y estas solo valen con --piloto).")
         if dry == conf:
             raise CommandError("Usa exactamente uno: --dry-run o --confirmar.")
         if o['scan_limit'] > SCAN_LIMIT_MAX:
@@ -510,10 +533,12 @@ class Command(BaseCommand):
 
         if o['piloto']:
             try:
+                reserva = piloto_mod.ManifiestoReserva(o['reserva'], o['reserva_sello'])   # antes de procesar nada
                 with piloto_mod.RegistroPiloto(o['registro_piloto']) as registro:
                     c = procesar_ingesta_controlada(
                         o['agent_id'], scan_limit=o['scan_limit'], max_analisis=o['max_analisis'],
-                        dry=dry, conf=conf, proveedor=o['proveedor'], registro=registro, log=self.stdout.write)
+                        dry=dry, conf=conf, proveedor=o['proveedor'], registro=registro, reserva=reserva,
+                        log=self.stdout.write)
             except piloto_mod.RegistroPilotoError as e:
                 raise CommandError(f"Piloto: {e}.")
         else:
@@ -542,7 +567,9 @@ class Command(BaseCommand):
             self.stdout.write(f"  no representables:        {c['no_representables']}  (no caben en exp-entrada-1)")
         if 'piloto' in c:
             p = c['piloto']
-            self.stdout.write(f"  piloto: ya existentes={c['ya_existentes']} anteriores al inicio={c['anteriores_al_piloto']}")
+            self.stdout.write(f"  piloto: ya existentes={c['ya_existentes']} reservadas={c['reservadas']} "
+                              f"anteriores al inicio={c['anteriores_al_piloto']}")
+            self.stdout.write(f"  piloto: reserva {p['reserva_version']} sello {p['reserva_sello'][:16]}…")
             self.stdout.write(f"  piloto: intentos {p['usados']}/{p['tope_total']} (restan {p['restantes']})")
         for i, sel in enumerate(c['seleccion'], 1):
             self.stdout.write(f"  [ensayo] {i}: regla {sel['regla']} nivel {sel['nivel']} {sel['fecha']} {sel['grupos']}")

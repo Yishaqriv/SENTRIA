@@ -6329,7 +6329,8 @@ import urllib.error as _urlerror
 from dashboard.ia import piloto as piloto_mod
 
 
-class IngestaLotesVertexYPilotoTests(TestCase):
+class _PilotoBase:
+    """Auxiliares comunes (sin pruebas propias) de la ingesta por lotes y del piloto."""
     def setUp(self):
         self.srv = _activo_real()
         asignar_agente("000", "SRV-01")
@@ -6344,8 +6345,8 @@ class IngestaLotesVertexYPilotoTests(TestCase):
                 "description": "sshd: brute force trying to get access to the system.", "groups": groups,
                 "timestamp": ts or self.futuro}
 
-    def _correr(self, crudas, *, dry=False, conf=True, proveedor="vertex_tuned", registro=None, env=_ENV_VERTEX,
-                urlopen=None, token=None, obtener=None):
+    def _correr(self, crudas, *, dry=False, conf=True, proveedor="vertex_tuned", registro=None, reserva=None,
+                env=_ENV_VERTEX, urlopen=None, token=None, obtener=None, log=None):
         crudas = list(crudas)
         leido = []
 
@@ -6362,12 +6363,42 @@ class IngestaLotesVertexYPilotoTests(TestCase):
             try:
                 r = procesar_ingesta_controlada(
                     "000", scan_limit=100, max_analisis=3, dry=dry, conf=conf, proveedor=proveedor,
-                    registro=registro, get_alertas=get_alertas,
-                    obtener_proveedor=obtener or proveedores.obtener_proveedor)
+                    registro=registro, reserva=reserva, get_alertas=get_alertas,
+                    obtener_proveedor=obtener or proveedores.obtener_proveedor, log=log or (lambda _s: None))
             except _CommandError as e:
                 r = e
         return r, tok, url, leido
 
+    # -- piloto: registro persistente --
+    def _crear(self, tope=30, agente="000", proveedor="vertex_tuned"):
+        return piloto_mod.crear(self.ruta, agente=agente, proveedor=proveedor, tope_total=tope)
+
+    def _manifiesto(self, episodios=(), sesiones=None, nombre="reserva.json"):
+        from dashboard.sellos import serializar_canonico
+        cuerpo = {"tipo": "APARTADO_PRUEBA", "fecha": "2026-10-09",
+                  "episodios": [{"ep": f"E{i}", "agente": a, "dias": list(d)} for i, (a, d) in enumerate(episodios)]}
+        if sesiones is not None:
+            cuerpo["sesiones"] = sesiones
+        sello = hashlib.sha256(serializar_canonico(cuerpo).encode("utf-8")).hexdigest()
+        ruta = os.path.join(self.dir, nombre)
+        with open(ruta, "w", encoding="utf-8") as f:
+            json.dump({"cuerpo": cuerpo, "sello_json_canonico_v1": sello}, f)
+        os.chmod(ruta, 0o600)
+        return ruta, sello
+
+    def _reserva(self, **kw):
+        return piloto_mod.ManifiestoReserva(*self._manifiesto(**kw))
+
+    def _piloto(self, crudas, reserva=None, **kw):
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            return self._correr(crudas, registro=reg, reserva=reserva or self._reserva(), **kw)
+
+    def _usados(self):
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            return reg.usados
+
+
+class IngestaLotesVertexYPilotoTests(_PilotoBase, TestCase):
     # -- selección de proveedor en lotes --
     def test_lotes_vertex_usa_analizador_real_y_comprueba_credenciales_antes(self):
         r, tok, url, leido = self._correr([self._doc(1), self._doc(2)])
@@ -6429,18 +6460,6 @@ class IngestaLotesVertexYPilotoTests(TestCase):
                          stdout=StringIO())
         self.assertEqual(g.call_count, 1)
 
-    # -- piloto: registro persistente --
-    def _crear(self, tope=30, agente="000", proveedor="vertex_tuned"):
-        return piloto_mod.crear(self.ruta, agente=agente, proveedor=proveedor, tope_total=tope)
-
-    def _piloto(self, crudas, **kw):
-        with piloto_mod.RegistroPiloto(self.ruta) as reg:
-            return self._correr(crudas, registro=reg, **kw)
-
-    def _usados(self):
-        with piloto_mod.RegistroPiloto(self.ruta) as reg:
-            return reg.usados
-
     def test_crear_no_reinicia_y_sin_registro_no_arranca(self):
         with self.assertRaises(piloto_mod.RegistroPilotoError):
             piloto_mod.RegistroPiloto(self.ruta)                       # no existe: no se crea solo
@@ -6450,9 +6469,11 @@ class IngestaLotesVertexYPilotoTests(TestCase):
         with self.assertRaises(_CommandError):
             call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned",
                          "--iniciar-piloto", "--registro-piloto", self.ruta, stdout=StringIO())
+        man, sello = self._manifiesto()
         with self.assertRaises(_CommandError):
             call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", "--dry-run",
-                         "--piloto", "--registro-piloto", os.path.join(self.dir, "otro.jsonl"), stdout=StringIO())
+                         "--piloto", "--registro-piloto", os.path.join(self.dir, "otro.jsonl"),
+                         "--reserva", man, "--reserva-sello", sello, stdout=StringIO())
         self.assertEqual(oct(os.stat(self.ruta).st_mode & 0o777), "0o600")
         with self.assertRaises(_CommandError):
             call_command("ingestar_alertas", "--agent-id", "000", "--opensearch-id", "X", "--confirmar",
@@ -6564,3 +6585,75 @@ class VertexComprobarCredencialesTests(SimpleTestCase):
     def test_desactivado_o_sin_endpoint(self):
         with mock.patch.dict(os.environ, {"IA_VERTEX_HABILITADO": "0", "GEMINI_TUNED_ENDPOINT": _ENDPOINT_PRUEBA}):
             self.assertIn("desactivada", proveedores.VertexTunedProvider().comprobar_credenciales())
+
+
+
+class PilotoReservaExplicitaTests(_PilotoBase, TestCase):
+    """Reserva explícita: manifiesto obligatorio y sellado, exclusión con recuento y constancia por ejecución."""
+
+    def test_manifiesto_obligatorio_e_integro(self):
+        ruta, sello = self._manifiesto(episodios=[("000", ["2026-10-01"])])
+        self.assertEqual(piloto_mod.ManifiestoReserva(ruta, sello).sello, sello)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.ManifiestoReserva(ruta, "0" * 64)                     # otra versión esperada
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.ManifiestoReserva(ruta, sello[:16])                   # sello incompleto
+        doc = json.load(open(ruta))
+        doc["cuerpo"]["episodios"] = []                                      # editado sin resellar
+        with open(ruta, "w") as f:
+            json.dump(doc, f)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.ManifiestoReserva(ruta, sello)
+        ruta2, sello2 = self._manifiesto(nombre="r2.json")                   # resellado: no es la versión esperada
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.ManifiestoReserva(ruta2, sello)
+        os.chmod(ruta2, 0o644)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.ManifiestoReserva(ruta2, sello2)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.ManifiestoReserva(os.path.join(self.dir, "no.json"), sello2)
+
+    def test_piloto_sin_reserva_no_procesa(self):
+        self._crear()
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            r, tok, url, leido = self._correr([self._doc(1)], registro=reg, reserva=None)
+        self.assertIsInstance(r, _CommandError)
+        self.assertEqual((leido, url.call_count, self._usados()), ([], 0, 0))
+        with self.assertRaises(_CommandError):
+            call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", "--dry-run",
+                         "--piloto", "--registro-piloto", self.ruta, stdout=StringIO())
+
+    def test_excluye_episodios_y_sesiones_reservados_con_recuento(self):
+        self._crear()
+        manana = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1))
+        pasado = manana + datetime.timedelta(days=1)
+        ses_ini = pasado.replace(hour=10, minute=0, second=0, microsecond=0)
+        reserva = self._reserva(episodios=[("000", [manana.date().isoformat()]), ("001", [pasado.date().isoformat()])],
+                                sesiones=[{"agente": "000", "inicio_utc": ses_ini.isoformat(),
+                                           "fin_utc": (ses_ini + datetime.timedelta(hours=1)).isoformat()}])
+        z = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
+        docs = [self._doc(1, ts=z(manana.replace(hour=12))),                                  # episodio reservado
+                self._doc(2, ts=z(ses_ini + datetime.timedelta(minutes=30))),                 # sesión reservada
+                self._doc(3, ts=z(ses_ini + datetime.timedelta(hours=3)))]                    # libre (episodio de 001)
+        r, _, url, _ = self._piloto(docs, reserva=reserva)
+        self.assertEqual((r["reservadas"], url.call_count), (2, 1))
+        self.assertEqual(list(Alert.objects.values_list("opensearch_id", flat=True)), ["LOTE-VTX-3"])
+
+    def test_constancia_de_version_y_huella_por_ejecucion(self):
+        self._crear()
+        ruta, sello = self._manifiesto()
+        reserva = piloto_mod.ManifiestoReserva(ruta, sello)
+        antes = open(self.ruta, "rb").read()
+        lineas = []
+        self._piloto([self._doc(1)], reserva=reserva, dry=True, conf=False, log=lineas.append)
+        self.assertEqual(open(self.ruta, "rb").read(), antes)              # el ensayo no escribe en el registro
+        self.assertTrue(any(l.startswith("Fuente: indexador Wazuh, lectura ACTUAL") for l in lineas))
+        r, _, _, _ = self._piloto([self._doc(2)], reserva=reserva)
+        eventos = [json.loads(l) for l in open(self.ruta, encoding="utf-8")]
+        ejec = [e for e in eventos if e["tipo"] == "ejecucion"]
+        self.assertEqual(len(ejec), 1)
+        self.assertEqual((ejec[0]["reserva_sello"], ejec[0]["reserva_version"]), (sello, "APARTADO_PRUEBA:2026-10-09"))
+        tipos = [e["tipo"] for e in eventos]
+        self.assertLess(tipos.index("ejecucion"), tipos.index("intento"))  # constancia antes de llamar
+        self.assertEqual(eventos[0]["clase_material"], "desarrollo")
+        self.assertEqual(r["piloto"]["reserva_sello"], sello)
