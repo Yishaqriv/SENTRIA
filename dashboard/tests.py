@@ -6155,9 +6155,10 @@ class AnalisisDirigidoVertexTests(TestCase):
         self.assertEqual((a.estado_analisis, a.veredicto_ia, url.call_count), ("ANALISIS_FALLIDO", None, 1))
         self.assertEqual(a.contexto_ia_snapshot["_diagnostico_fallo"]["categoria"], "impacto_sin_sustento")
 
-    def test_proveedor_solo_en_modo_dirigido(self):
+    def test_proveedor_desconocido_rechazado(self):
+        # Desde la ingesta piloto, --proveedor también se admite en lotes; un nombre desconocido se rechaza siempre.
         with self.assertRaises(_CommandError):
-            call_command("ingestar_alertas", "--agent-id", "000", "--dry-run", "--proveedor", "vertex_tuned")
+            call_command("ingestar_alertas", "--agent-id", "000", "--dry-run", "--proveedor", "otro")
         with self.assertRaises(_CommandError):
             procesar_una_por_opensearch_id(self.osid, "000", get_uno=lambda _id: self._doc(), proveedor="otro")
         self.assertEqual(Alert.objects.count(), 0)
@@ -6319,3 +6320,247 @@ class AccionesEscrituraPostTests(TestCase):
         self.assertIn("return confirm(", body[i:i + 400])
         self.assertIn("csrfmiddlewaretoken", body[i:i + 600])
         self.reclasificar.assert_not_called()
+
+
+# --------------------------------------------------------------------------
+# Ingesta por lotes con vertex_tuned y piloto acotado con registro persistente (sin red)
+# --------------------------------------------------------------------------
+import urllib.error as _urlerror
+from dashboard.ia import piloto as piloto_mod
+
+
+class IngestaLotesVertexYPilotoTests(TestCase):
+    def setUp(self):
+        self.srv = _activo_real()
+        asignar_agente("000", "SRV-01")
+        self.dir = tempfile.mkdtemp(prefix="sentria-piloto-test-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.dir, ignore_errors=True))
+        self.ruta = os.path.join(self.dir, "piloto.jsonl")
+        self.futuro = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+
+    def _doc(self, i, *, ts=None, groups="syslog,sshd,authentication_failures", level=10, rule="5712"):
+        return {"opensearch_id": f"LOTE-VTX-{i}", "agent_id": "000", "level": level, "rule_id": rule,
+                "description": "sshd: brute force trying to get access to the system.", "groups": groups,
+                "timestamp": ts or self.futuro}
+
+    def _correr(self, crudas, *, dry=False, conf=True, proveedor="vertex_tuned", registro=None, env=_ENV_VERTEX,
+                urlopen=None, token=None, obtener=None):
+        crudas = list(crudas)
+        leido = []
+
+        def get_alertas(size, agent_id, min_level):
+            leido.append(tok.call_count)           # cuántas comprobaciones de credencial había al leer Wazuh
+            return crudas[:size]
+
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token",
+                                  **(token or {"return_value": _TOKEN_FALSO})) as tok, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen",
+                           **(urlopen or {"return_value": _resp_vertex(_salida_cvss())})) as url:
+            os.environ.pop("GEMINI_API_KEY", None)
+            try:
+                r = procesar_ingesta_controlada(
+                    "000", scan_limit=100, max_analisis=3, dry=dry, conf=conf, proveedor=proveedor,
+                    registro=registro, get_alertas=get_alertas,
+                    obtener_proveedor=obtener or proveedores.obtener_proveedor)
+            except _CommandError as e:
+                r = e
+        return r, tok, url, leido
+
+    # -- selección de proveedor en lotes --
+    def test_lotes_vertex_usa_analizador_real_y_comprueba_credenciales_antes(self):
+        r, tok, url, leido = self._correr([self._doc(1), self._doc(2)])
+        self.assertEqual((r["proveedor"], r["llamadas_reales"], url.call_count, r["completed"]), ("vertex_tuned", 2, 2, 2))
+        self.assertEqual(leido, [1])                       # credencial comprobada (1 token) ANTES de leer Wazuh
+        a = Alert.objects.get(opensearch_id="LOTE-VTX-1")
+        self.assertEqual((a.proveedor_ia, a.modelo_ia), ("vertex_tuned", _ENDPOINT_PRUEBA))
+        em = a.contexto_ia_snapshot["_entrada_modelo"]
+        self.assertEqual((em["plantilla"], em["contrato_entrada"]), ("PLANTILLA_ENTRADA_v1", "exp-entrada-1"))
+
+    def test_vertex_desactivado_aborta_sin_leer_ni_llamar(self):
+        r, tok, url, leido = self._correr([self._doc(1)], env={"IA_VERTEX_HABILITADO": "0",
+                                                                "GEMINI_TUNED_ENDPOINT": _ENDPOINT_PRUEBA})
+        self.assertIsInstance(r, _CommandError)
+        self.assertEqual((leido, tok.call_count, url.call_count, Alert.objects.count()), ([], 0, 0, 0))
+
+    def test_credenciales_no_disponibles_aborta_sin_proveedor_alternativo(self):
+        pedidos = []
+
+        def obtener(nombre):
+            pedidos.append(nombre)
+            return proveedores.obtener_proveedor(nombre)
+        r, tok, url, leido = self._correr([self._doc(1)], token={"side_effect": RuntimeError("sin ADC")}, obtener=obtener)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("no utilizable", str(r))
+        self.assertEqual((pedidos, leido, url.call_count, Alert.objects.count()), (["vertex_tuned"], [], 0, 0))
+
+    def test_sin_reintentos_ante_error_http(self):
+        err = _urlerror.HTTPError("u", 503, "x", {}, None)
+        r, tok, url, _ = self._correr([self._doc(1)], urlopen={"side_effect": err})
+        self.assertEqual((url.call_count, r["analisis_fallido"]), (1, 1))
+        self.assertEqual(Alert.objects.get(opensearch_id="LOTE-VTX-1").estado_analisis, "ANALISIS_FALLIDO")
+
+    def test_no_representable_no_se_persiste_ni_llama(self):
+        doc = dict(self._doc(1, groups="windows,windows_application", rule="60602"),
+                   win={"channel": "Application", "proveedor": "Application Error", "event_id": "1000"})
+        r, tok, url, _ = self._correr([doc])
+        self.assertEqual((r["no_representables"], r["elegibles"], url.call_count, Alert.objects.count()), (1, 0, 0, 0))
+
+    def test_predeterminado_sigue_siendo_gemini(self):
+        pedidos = []
+
+        def obtener(nombre):
+            pedidos.append(nombre)
+            return _ProveedorFake()
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "k", "GEMINI_MODEL": "m"}):
+            c = procesar_ingesta_controlada("000", scan_limit=10, max_analisis=3, dry=False, conf=True,
+                                            get_alertas=lambda size, agent_id, min_level: [self._doc(1)],
+                                            obtener_proveedor=obtener)
+        self.assertEqual((pedidos, c["proveedor"], c["completed"]), (["gemini_developer"], "gemini_developer", 1))
+        self.assertNotIn("_entrada_modelo", Alert.objects.get(opensearch_id="LOTE-VTX-1").contexto_ia_snapshot)
+
+    def test_cli_rechaza_proveedor_desconocido_y_admite_vertex_en_lotes(self):
+        with self.assertRaises(_CommandError):
+            call_command("ingestar_alertas", "--agent-id", "000", "--dry-run", "--proveedor", "otro")
+        with mock.patch("dashboard.management.commands.ingestar_alertas.get_latest_alerts", return_value=[]) as g, \
+                mock.patch.dict(os.environ, _ENV_VERTEX):
+            call_command("ingestar_alertas", "--agent-id", "000", "--dry-run", "--proveedor", "vertex_tuned",
+                         stdout=StringIO())
+        self.assertEqual(g.call_count, 1)
+
+    # -- piloto: registro persistente --
+    def _crear(self, tope=30, agente="000", proveedor="vertex_tuned"):
+        return piloto_mod.crear(self.ruta, agente=agente, proveedor=proveedor, tope_total=tope)
+
+    def _piloto(self, crudas, **kw):
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            return self._correr(crudas, registro=reg, **kw)
+
+    def _usados(self):
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            return reg.usados
+
+    def test_crear_no_reinicia_y_sin_registro_no_arranca(self):
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.RegistroPiloto(self.ruta)                       # no existe: no se crea solo
+        self._crear()
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            self._crear()                                              # ya existe: no se reinicia
+        with self.assertRaises(_CommandError):
+            call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned",
+                         "--iniciar-piloto", "--registro-piloto", self.ruta, stdout=StringIO())
+        with self.assertRaises(_CommandError):
+            call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", "--dry-run",
+                         "--piloto", "--registro-piloto", os.path.join(self.dir, "otro.jsonl"), stdout=StringIO())
+        self.assertEqual(oct(os.stat(self.ruta).st_mode & 0o777), "0o600")
+        with self.assertRaises(_CommandError):
+            call_command("ingestar_alertas", "--agent-id", "000", "--opensearch-id", "X", "--confirmar",
+                         "--piloto", "--registro-piloto", self.ruta, stdout=StringIO())
+
+    def test_registro_inseguro_o_en_repositorio_rechazado(self):
+        self._crear()
+        os.chmod(self.ruta, 0o644)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.RegistroPiloto(self.ruta)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.crear(os.path.join(piloto_mod._RAIZ_REPOSITORIO, "piloto.jsonl"),
+                             agente="000", proveedor="vertex_tuned", tope_total=3)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            piloto_mod.crear(os.path.join(self.dir, "x.jsonl"), agente="000", proveedor="vertex_tuned", tope_total=31)
+
+    def test_topes_por_ejecucion_y_total_persisten_entre_ejecuciones(self):
+        self._crear(tope=4)
+        r1, _, url1, _ = self._piloto([self._doc(i) for i in range(5)])
+        self.assertEqual((url1.call_count, r1["piloto"]["usados"]), (3, 3))         # 3 por ejecución
+        r2, _, url2, _ = self._piloto([self._doc(i) for i in range(5, 10)])        # relanzar no reinicia
+        self.assertEqual((url2.call_count, r2["piloto"]["restantes"]), (1, 0))
+        r3, tok3, url3, leido3 = self._piloto([self._doc(i) for i in range(10, 12)])
+        self.assertIsInstance(r3, _CommandError)
+        self.assertIn("agotado", str(r3))
+        self.assertEqual((url3.call_count, leido3), (0, []))
+        self.assertEqual((self._usados(), Alert.objects.filter(proveedor_ia="vertex_tuned").count()), (4, 4))
+
+    def test_intentos_fallidos_o_interrumpidos_cuentan(self):
+        self._crear(tope=5)
+        err = _urlerror.HTTPError("u", 500, "x", {}, None)
+        self._piloto([self._doc(1)], urlopen={"side_effect": err})
+        self.assertEqual(self._usados(), 1)                                         # fallo HTTP: cuenta
+        with mock.patch.object(proveedores.VertexTunedProvider, "analizar", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self._piloto([self._doc(2)])
+        self.assertEqual(self._usados(), 2)                                         # interrumpido: cuenta
+
+    def test_piloto_solo_alertas_nuevas_y_posteriores_al_inicio(self):
+        self._crear()
+        previa = Alert.objects.create(titulo="t", descripcion="d", estado="Pendiente", opensearch_id="LOTE-VTX-1",
+                                      estado_analisis="ANALISIS_FALLIDO", wazuh_agent_id="000")
+        r, _, url, _ = self._piloto([self._doc(1), self._doc(2, ts="2026-10-01T10:00:00Z"), self._doc(3)])
+        self.assertEqual((r["ya_existentes"], r["anteriores_al_piloto"], url.call_count), (1, 1, 1))
+        previa.refresh_from_db()
+        self.assertEqual((previa.estado_analisis, previa.proveedor_ia), ("ANALISIS_FALLIDO", None))  # no reanalizada
+        self.assertFalse(Alert.objects.filter(opensearch_id="LOTE-VTX-2").exists())
+
+    def test_ensayo_sin_efectos(self):
+        self._crear()
+        antes = open(self.ruta, "rb").read()
+        r, tok, url, _ = self._piloto([self._doc(1), self._doc(2)], dry=True, conf=False)
+        self.assertEqual((tok.call_count, url.call_count, Alert.objects.count()), (0, 0, 0))
+        self.assertEqual(open(self.ruta, "rb").read(), antes)
+        self.assertEqual(len(r["seleccion"]), 2)
+        self.assertNotIn("LOTE-VTX", json.dumps(r, ensure_ascii=False, default=str))
+
+    def test_registro_incoherente_con_mysql_aborta(self):
+        self._crear()
+        Alert.objects.create(titulo="t", descripcion="d", estado="Pendiente", opensearch_id="FUERA-DEL-REGISTRO",
+                             estado_analisis="COMPLETED", proveedor_ia="vertex_tuned", wazuh_agent_id="000")
+        r, _, url, leido = self._piloto([self._doc(1)])
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("incoherente", str(r))
+        self.assertEqual((url.call_count, leido), (0, []))
+
+    def test_candado_y_registro_de_otro_agente(self):
+        self._crear(agente="001")
+        with piloto_mod.RegistroPiloto(self.ruta):
+            with self.assertRaises(piloto_mod.RegistroPilotoError):
+                piloto_mod.RegistroPiloto(self.ruta)
+        r, _, url, _ = self._piloto([self._doc(1)])
+        self.assertIsInstance(r, _CommandError)
+        self.assertEqual(url.call_count, 0)
+
+    def test_registro_sin_identificadores_ni_contenido(self):
+        self._crear()
+        self._piloto([self._doc(1)])
+        texto = open(self.ruta, encoding="utf-8").read()
+        self.assertNotIn("LOTE-VTX", texto)
+        self.assertNotIn(_TOKEN_FALSO, texto)
+        self.assertIn('"tipo": "resultado"', texto)
+
+
+class VertexComprobarCredencialesTests(SimpleTestCase):
+    def _prov(self, extra):
+        with mock.patch.dict(os.environ, dict(_ENV_VERTEX, **extra)):
+            return proveedores.VertexTunedProvider()
+
+    def test_archivo_de_credenciales_inseguro_se_rechaza_sin_pedir_token(self):
+        d = tempfile.mkdtemp(prefix="sentria-cred-test-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        ruta = os.path.join(d, "sa.json")
+        with open(ruta, "w") as f:
+            f.write("{}")
+        os.chmod(ruta, 0o644)
+        with mock.patch.dict(os.environ, dict(_ENV_VERTEX, GOOGLE_APPLICATION_CREDENTIALS=ruta)), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token") as tok:
+            err = proveedores.VertexTunedProvider().comprobar_credenciales()
+            self.assertIn("permisos inseguros", err)
+            os.chmod(ruta, 0o600)
+            tok.return_value = _TOKEN_FALSO
+            self.assertIsNone(proveedores.VertexTunedProvider().comprobar_credenciales(con_red=False))
+            self.assertEqual(tok.call_count, 0)                          # sin red: no pide token
+            self.assertIsNone(proveedores.VertexTunedProvider().comprobar_credenciales())
+            self.assertEqual(tok.call_count, 1)
+        self.assertNotIn(ruta, err)
+
+    def test_desactivado_o_sin_endpoint(self):
+        with mock.patch.dict(os.environ, {"IA_VERTEX_HABILITADO": "0", "GEMINI_TUNED_ENDPOINT": _ENDPOINT_PRUEBA}):
+            self.assertIn("desactivada", proveedores.VertexTunedProvider().comprobar_credenciales())

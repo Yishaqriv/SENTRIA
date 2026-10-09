@@ -10,6 +10,9 @@ mysqlclient==2.2.8
 requests==2.32.5
 urllib3==2.6.3
 google-genai==2.21.0
+# Autenticación del proveedor vertex_tuned (dashboard/ia/proveedores.py importa google.auth).
+# Compatible con google-genai 2.21.0 (exige google-auth >=2.56,<3).
+google-auth==2.57.0
 
 # Configuración vía variables de entorno (.env)
 python-dotenv==1.2.2

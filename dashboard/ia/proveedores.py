@@ -163,6 +163,30 @@ class TokenTemporalError(ValueError):
     """Archivo de token no utilizable. El mensaje nunca incluye el token ni el contenido del archivo."""
 
 
+def archivo_credencial_inseguro(ruta):
+    """
+    Archivo de credenciales de GOOGLE_APPLICATION_CREDENTIALS: ruta absoluta, fuera del repositorio, archivo regular
+    (no enlace), del usuario actual y sin permisos de grupo ni de otros. Devuelve None o el motivo (sin contenido).
+    """
+    import stat
+    if not os.path.isabs(ruta):
+        return "GOOGLE_APPLICATION_CREDENTIALS debe ser una ruta absoluta"
+    real = os.path.realpath(ruta)
+    if real == _RAIZ_REPOSITORIO or real.startswith(_RAIZ_REPOSITORIO + os.sep):
+        return "el archivo de credenciales no puede estar dentro del repositorio"
+    try:
+        st = os.lstat(ruta)
+    except OSError:
+        return "el archivo de credenciales no existe o no es accesible"
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISREG(st.st_mode):
+        return "el archivo de credenciales debe ser un archivo regular (no un enlace)"
+    if st.st_uid != os.getuid():
+        return "el archivo de credenciales pertenece a otro usuario"
+    if st.st_mode & 0o077:
+        return "permisos inseguros en el archivo de credenciales (se exige 600)"
+    return None
+
+
 def leer_token_temporal(ruta, ahora=None):
     """
     Lee un token de acceso de corta duración desde un archivo PRIVADO externo al repositorio.
@@ -255,6 +279,37 @@ class VertexTunedProvider(ProveedorIA):
             return f"configuración inválida: VERTEX_AUTENTICACION debe ser uno de {list(MODOS_AUTENTICACION)}"
         if self._modo_auth == "token_archivo" and not self._token_archivo:
             return "configuración incompleta: VERTEX_AUTENTICACION=token_archivo exige VERTEX_TOKEN_ARCHIVO"
+        return None
+
+    def comprobar_credenciales(self, *, con_red=True):
+        """
+        Comprueba, SIN llamar al modelo, que hay credenciales utilizables. Devuelve None o un motivo sanitizado.
+        - token_archivo: valida el archivo (local).
+        - adc: si GOOGLE_APPLICATION_CREDENTIALS está definida, exige un archivo privado fuera del repositorio;
+          con `con_red`, obtiene además un token de acceso (petición al servicio de autenticación, no al modelo)
+          y lo descarta.
+        """
+        err = self.error_configuracion()
+        if err:
+            return err
+        if self._modo_auth == "token_archivo":
+            try:
+                leer_token_temporal(self._token_archivo)
+            except TokenTemporalError as e:
+                return f"token temporal no utilizable: {e}"
+            return None
+        ruta = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+        if ruta:
+            err = archivo_credencial_inseguro(ruta)
+            if err:
+                return err
+        if not con_red:
+            return None
+        try:
+            token = self._token()
+        except Exception as e:                      # sin el detalle: nunca expone rutas ni contenido
+            return f"credenciales predeterminadas de aplicación no disponibles ({type(e).__name__})"
+        token = None                                # noqa: F841 (se descarta)
         return None
 
     def url(self):
