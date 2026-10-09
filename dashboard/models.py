@@ -13,6 +13,8 @@ class ActivoLogico(models.Model):
         ("estacion_publica", "Estación pública"),
         ("equipo_administracion", "Equipo de administración"),
         ("servidor_interno", "Servidor interno"),
+        # Enmienda 1C-E1: equipo de uso personal de un único usuario, fuera del escenario simulado del café.
+        ("equipo_personal", "Equipo personal"),
     ]
     CRITICIDAD_CHOICES = [
         ("media", "Media"),
@@ -38,6 +40,9 @@ class ActivoLogico(models.Model):
     os_role = models.CharField(max_length=20, choices=OS_ROLE_CHOICES)
     hora_inicio_operacion = models.TimeField()
     hora_fin_operacion = models.TimeField()
+    #: uso a cualquier hora (incluida la medianoche): las horas de inicio y fin no se usan y el horario
+    #: operativo es siempre «dentro». Explícito para no depender de un intervalo como 00:00–23:59.
+    horario_sin_restriccion = models.BooleanField(default=False)
     zona_horaria = models.CharField(max_length=64, default="America/Bogota")
     contexto_autorizado_es = models.TextField()
     activo = models.BooleanField(default=True)

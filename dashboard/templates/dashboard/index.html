@@ -775,7 +775,7 @@
                         {{ alert.activo_logico.get_tipo_activo_display }} ·
                         criticidad {{ alert.activo_logico.get_criticidad_display }} ·
                         {{ alert.activo_logico.get_os_family_display }} / {{ alert.activo_logico.get_os_role_display }} ·
-                        horario {{ alert.activo_logico.hora_inicio_operacion|time:"H:i" }}–{{ alert.activo_logico.hora_fin_operacion|time:"H:i" }} ({{ alert.activo_logico.zona_horaria }})
+                        {% if alert.activo_logico.horario_sin_restriccion %}horario sin restricción{% else %}horario {{ alert.activo_logico.hora_inicio_operacion|time:"H:i" }}–{{ alert.activo_logico.hora_fin_operacion|time:"H:i" }}{% endif %} ({{ alert.activo_logico.zona_horaria }})
                     </div>
                     {% endif %}
 

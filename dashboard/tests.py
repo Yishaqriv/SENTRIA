@@ -6775,3 +6775,82 @@ class IndexadorTLSFijadoTests(_PilotoBase, TestCase):
         self.assertEqual(len(recibido), 2)
         self.assertEqual(recibido[0], b"")                                 # nada (ni credenciales) tras el handshake
         self.assertIn(b"Authorization: Basic", recibido[1])                # con la huella correcta sí se envía
+
+
+# --------------------------------------------------------------------------
+# Enmienda 1C-E1: equipo_personal y horario sin restricción (LAPTOP-01 cotidiano)
+# --------------------------------------------------------------------------
+CONTEXTO_LAPTOP_COTIDIANO = (
+    "Portátil Windows personal de un único usuario, utilizado para estudio, trabajo y ocio. La actividad habitual "
+    "incluye navegación web, ofimática, mensajería, videollamadas, desarrollo de software, juegos, streaming, uso de "
+    "máquinas virtuales, inicio y cierre de sesión e instalación y actualización de programas. Su uso puede ocurrir a "
+    "cualquier hora, incluida la madrugada. Este contexto describe actividades habituales; no demuestra por sí solo que "
+    "una operación concreta esté autorizada o sea benigna. El uso legítimo de credenciales y las configuraciones de "
+    "arranque automático de aplicaciones no constituyen por sí solos actividad maliciosa. No están autorizados los "
+    "accesos indebidos a credenciales, la ejecución de malware, la alteración no autorizada de controles de seguridad, "
+    "cuentas o privilegios, la persistencia maliciosa, el movimiento lateral ni la exfiltración. Las ventanas de "
+    "mantenimiento específicas solo existen cuando se registran expresamente."
+)
+
+
+class EquipoPersonalHorarioSinRestriccionTests(TestCase):
+    def _laptop(self, **kw):
+        base = dict(identificador="LAPTOP-01", nombre_visible="Portátil Windows personal", tipo_activo="equipo_personal",
+                    criticidad="media", os_family="windows", os_role="estacion_cliente",
+                    hora_inicio_operacion=datetime.time(0, 0), hora_fin_operacion=datetime.time(0, 0),
+                    horario_sin_restriccion=True, zona_horaria="America/Bogota",
+                    contexto_autorizado_es=CONTEXTO_LAPTOP_COTIDIANO, activo=True)
+        base.update(kw)
+        a = ActivoLogico(**base)
+        a.full_clean()                                          # equipo_personal es una opción válida
+        a.save()
+        return a
+
+    def test_horario_sin_restriccion_incluye_medianoche_y_cualquier_hora(self):
+        from dashboard.ia.prompt import _ventana_operativa
+        a = self._laptop()
+        # Bogotá = UTC-5: 05:00Z = 00:00 local; 04:59:59Z = 23:59:59 local; 08:00Z = 03:00 local.
+        for ts in ("2026-10-09T05:00:00Z", "2026-10-09T04:59:59.999Z", "2026-10-09T08:00:00Z", "2026-10-09T17:30:00Z"):
+            self.assertEqual(_ventana_operativa(ts, a), "dentro_horario_operativo", ts)
+        self.assertEqual(_ventana_operativa(None, a), "dentro_horario_operativo")     # cualquier hora: también sin hora
+
+    def test_activos_con_intervalo_conservan_su_calculo(self):
+        from dashboard.ia.prompt import _ventana_operativa
+        a = self._laptop(identificador="EP-X", tipo_activo="estacion_publica", horario_sin_restriccion=False,
+                         hora_inicio_operacion=datetime.time(8, 0), hora_fin_operacion=datetime.time(22, 0))
+        self.assertEqual(_ventana_operativa("2026-10-09T12:59:00Z", a), "fuera_horario_operativo")   # 07:59 local
+        self.assertEqual(_ventana_operativa("2026-10-09T17:00:00Z", a), "dentro_horario_operativo")  # 12:00 local
+        self.assertEqual(_ventana_operativa("2026-10-09T05:00:00Z", a), "fuera_horario_operativo")   # 00:00 local
+        self.assertEqual(_ventana_operativa(None, a), "no_determinado")
+        self.assertFalse(ActivoLogico._meta.get_field("horario_sin_restriccion").default)
+        self.assertEqual(getattr(ACTIVO_FAKE, "horario_sin_restriccion", False), False)
+
+    def test_entrada_representable_con_tipo_y_contexto_intactos(self):
+        from dashboard.ia.entrada_exportacion import NEUTRO_CONTEXTO, texto_usuario
+        from dashboard.dataset import construir_entrada, validar_privacidad
+        a = self._laptop()
+        self.assertTrue(all(x not in CONTEXTO_LAPTOP_COTIDIANO for x, _ in NEUTRO_CONTEXTO))
+        self.assertEqual(anonimizar_texto(CONTEXTO_LAPTOP_COTIDIANO), CONTEXTO_LAPTOP_COTIDIANO)
+        alerta = {"description": "sshd: brute force trying to get access to the system.", "level": 10,
+                  "groups": "syslog,sshd,authentication_failures", "rule_id": "5712", "timestamp": "2026-10-09T05:00:00Z"}
+        e = construir_entrada_e(alerta, a)
+        self.assertEqual((e["asset_type"], e["operational_window"]), ("equipo_personal", "dentro_horario_operativo"))
+        self.assertEqual(e["authorized_context_es"], CONTEXTO_LAPTOP_COTIDIANO)
+        self.assertNotIn("LAPTOP-01", json.dumps(e, ensure_ascii=False))
+        entrada = construir_entrada(SimpleNamespace(contexto_ia_snapshot=e))
+        texto, exportada = texto_usuario(entrada)
+        self.assertEqual((exportada["asset_type"], exportada["authorized_context_es"]),
+                         ("equipo_personal", CONTEXTO_LAPTOP_COTIDIANO))
+        self.assertTrue(validar_privacidad(entrada)[0])
+        self.assertIn("equipo_personal", texto)
+
+    def test_dashboard_muestra_horario_sin_restriccion(self):
+        a = self._laptop()
+        asignar_agente("001", "LAPTOP-01")
+        Alert.objects.create(titulo="t", descripcion="VISTA_LAPTOP", estado="Pendiente", estado_analisis="COMPLETED",
+                             veredicto_ia="REQUIERE_ATENCION", riesgo_ia="LOW", activo_logico=a)
+        u = User.objects.create_user("vl", password="p")
+        self.client.force_login(u)
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn("horario sin restricción", body)
+        self.assertIn("Equipo personal", body)

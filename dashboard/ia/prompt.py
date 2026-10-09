@@ -126,9 +126,15 @@ def _ventana_operativa(ts, activo):
     Cálculo OBJETIVO: compara la hora de la alerta con el horario de operación
     del activo. Devuelve 'dentro_horario_operativo' | 'fuera_horario_operativo'
     | 'no_determinado' (si no hay timestamp usable).
+    Activo con `horario_sin_restriccion`: cualquier hora está dentro del horario,
+    así que es 'dentro_horario_operativo' aunque falte la hora del evento.
     """
+    if activo is None:
+        return "no_determinado"
+    if getattr(activo, "horario_sin_restriccion", False):
+        return "dentro_horario_operativo"
     dt = _parsear_ts(ts)
-    if dt is None or activo is None:
+    if dt is None:
         return "no_determinado"
     try:
         from zoneinfo import ZoneInfo
