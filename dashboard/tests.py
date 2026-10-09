@@ -6161,3 +6161,112 @@ class AnalisisDirigidoVertexTests(TestCase):
         with self.assertRaises(_CommandError):
             procesar_una_por_opensearch_id(self.osid, "000", get_uno=lambda _id: self._doc(), proveedor="otro")
         self.assertEqual(Alert.objects.count(), 0)
+
+
+# --------------------------------------------------------------------------
+# Acciones que escriben: sólo POST + CSRF + rol (sin red; dependencias simuladas)
+# --------------------------------------------------------------------------
+_SIN_NOVEDADES = {"nuevas": 0, "recuperadas": 0, "analizadas": 0, "omitidas": 0, "fallidas": 0, "duplicadas": 0}
+
+
+class AccionesEscrituraPostTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user("ap", password="p")  # ANALISTA
+        self.client = self.client_class(enforce_csrf_checks=True)
+        self.client.force_login(self.user)
+        p = [mock.patch("dashboard.views.get_latest_alerts", return_value=[]),
+             mock.patch("dashboard.views.ingestar_lote", return_value=dict(_SIN_NOVEDADES)),
+             mock.patch("dashboard.views.reanalizar_alerta", return_value="analizada"),
+             mock.patch("dashboard.views.get_alert_by_id", return_value=None),
+             mock.patch("dashboard.ia.ingesta.analizar_alerta", side_effect=AssertionError("análisis no permitido"))]
+        self.get_latest, self.ingestar, self.reanalizar, self.get_by_id, self.analizar = [x.start() for x in p]
+        for x in p:
+            self.addCleanup(x.stop)
+
+    def _csrf(self):
+        """Token CSRF tal como lo obtiene el navegador: renderizando la cola (incluye el formulario)."""
+        self.client.get(reverse("index"))
+        return self.client.cookies["csrftoken"].value
+
+    def _sin_efectos_actualizar(self):
+        self.get_latest.assert_not_called()
+        self.ingestar.assert_not_called()
+        self.analizar.assert_not_called()
+
+    def test_get_update_alerts_405_sin_efectos(self):
+        n = Alert.objects.count()
+        self.assertEqual(self.client.get(reverse("update_alerts")).status_code, 405)
+        self._sin_efectos_actualizar()
+        self.assertEqual(Alert.objects.count(), n)
+
+    def test_post_update_alerts_sin_csrf_rechazado(self):
+        self.assertEqual(self.client.post(reverse("update_alerts")).status_code, 403)
+        self._sin_efectos_actualizar()
+
+    def test_post_update_alerts_sin_permisos_rechazado(self):
+        token = self._csrf()
+        self.user.perfilusuario.rol = "INVITADO"
+        self.user.perfilusuario.save()
+        r = self.client.post(reverse("update_alerts"), {"csrfmiddlewaretoken": token})
+        self.assertIn(r.status_code, (302, 403))
+        self.client.logout()
+        self.client.get(reverse("login"))                  # token válido para el anónimo: lo rechaza el login, no CSRF
+        r = self.client.post(reverse("update_alerts"), {"csrfmiddlewaretoken": self.client.cookies["csrftoken"].value})
+        self.assertEqual(r.status_code, 302)
+        self.assertIn(reverse("login"), r["Location"])
+        self._sin_efectos_actualizar()
+
+    def test_post_update_alerts_autorizado_una_vez_con_mensaje(self):
+        token = self._csrf()
+        r = self.client.post(reverse("update_alerts"), {"csrfmiddlewaretoken": token}, follow=True)
+        self.assertEqual(r.redirect_chain[0], (reverse("index"), 302))
+        self.get_latest.assert_called_once_with()
+        self.ingestar.assert_called_once_with([])
+        self.assertContains(r, "No hay alertas nuevas para importar.")
+
+    def test_boton_actualizar_es_formulario_post_con_csrf(self):
+        body = self.client.get(reverse("index")).content.decode()
+        url = reverse("update_alerts")
+        self.assertIn(f'<form method="post" action="{url}"', body)
+        self.assertNotIn(f'href="{url}"', body)
+        i = body.index(f'action="{url}"')
+        self.assertIn("csrfmiddlewaretoken", body[i:i + 300])
+
+    def _fallida(self):
+        return Alert.objects.create(titulo="t", descripcion="File deleted.", estado="Pendiente",
+                                    estado_analisis="ANALISIS_FALLIDO")
+
+    def test_reintentar_get_y_post_sin_csrf_no_ejecutan(self):
+        fall = self._fallida()
+        self.assertEqual(self.client.get(reverse("reintentar_analisis", args=[fall.id])).status_code, 200)
+        self.assertEqual(self.client.post(reverse("reintentar_analisis", args=[fall.id])).status_code, 403)
+        self.reanalizar.assert_not_called()
+        self.get_by_id.assert_not_called()
+
+    def test_reintentar_post_sin_permisos_no_ejecuta(self):
+        fall = self._fallida()
+        token = self._csrf()
+        self.user.perfilusuario.rol = "INVITADO"
+        self.user.perfilusuario.save()
+        r = self.client.post(reverse("reintentar_analisis", args=[fall.id]), {"csrfmiddlewaretoken": token})
+        self.assertIn(r.status_code, (302, 403))
+        self.reanalizar.assert_not_called()
+
+    def test_reintentar_post_autorizado_una_vez(self):
+        fall = self._fallida()
+        token = self._csrf()
+        r = self.client.post(reverse("reintentar_analisis", args=[fall.id]), {"csrfmiddlewaretoken": token}, follow=True)
+        self.assertEqual(self.reanalizar.call_count, 1)
+        self.assertContains(r, "Reintento: análisis completado.")
+
+    def test_lecturas_de_colas_y_confirmacion_no_disparan_analisis(self):
+        fall = self._fallida()
+        Alert.objects.create(titulo="t", descripcion="COMP", estado="Pendiente", estado_analisis="COMPLETED",
+                             veredicto_ia="REQUIERE_ATENCION", riesgo_ia="MEDIUM", proveedor_ia="vertex_tuned")
+        for nombre in ("index", "cola_atencion", "cola_falsos_positivos", "cola_auditoria_selectiva",
+                       "cola_pendientes", "cola_omitidas", "cola_legado"):
+            self.assertEqual(self.client.get(reverse(nombre)).status_code, 200, nombre)
+        self.client.get(reverse("reintentar_analisis", args=[fall.id]))
+        self._sin_efectos_actualizar()
+        self.reanalizar.assert_not_called()
+        self.get_by_id.assert_not_called()

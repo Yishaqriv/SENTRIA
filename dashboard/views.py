@@ -10,6 +10,7 @@ from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.core.paginator import Paginator
 from django.http import HttpResponse
+from django.views.decorators.http import require_POST
 from django.db.models import Q
 from django.utils import timezone
 
@@ -318,11 +319,13 @@ def cola_auditoria_selectiva(request):
 
 
 @requiere_rol('ADMIN', 'ANALISTA')
+@require_POST
 def update_alerts(request):
     """
     Trae la(s) última(s) alerta(s) del indexador Wazuh y las procesa por el
     camino de ingesta completo (dedup -> activo -> política -> contrato).
     Una alerta con análisis fallido NO oculta la alerta.
+    Sólo POST + CSRF: un GET (enlace, prefetch, recarga) devuelve 405 sin efectos.
     """
     try:
         raw_alerts = get_latest_alerts()

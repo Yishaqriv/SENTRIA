@@ -597,7 +597,10 @@
 <div class="toolbar">
     <div class="toolbar-left">
         {% if request.user|tiene_rol:"ADMIN,ANALISTA" %}
-        <a href="{% url 'update_alerts' %}" class="btn btn-slate" style="font-size:13px; padding:8px 16px;">↻ Actualizar</a>
+        <form method="post" action="{% url 'update_alerts' %}" style="display:inline; margin:0;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-slate" style="font-size:13px; padding:8px 16px;">↻ Actualizar</button>
+        </form>
         <a href="{% url 'exportar_csv' %}{% if query_string %}?{{ query_string }}{% endif %}" class="btn btn-green" style="font-size:13px; padding:8px 16px;">⬇ Exportar CSV</a>
         {% endif %}
         {% if request.user|tiene_rol:"ADMIN" %}
