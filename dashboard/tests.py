@@ -47,13 +47,14 @@ SALIDA_VALIDA = {
     "verdict": "REQUIERE_ATENCION",
     "risk": "MEDIUM",
     "explanation_es": "Se observaron varios intentos de autenticación fallidos consecutivos sin éxito posterior.",
+    # Salida SUSTENTADA para cualquier entrada: ningún factor afirma algo que la entrada no sostenga (sustento.py).
     "cvss_factors": {
-        "attack_vector": "red", "attack_complexity": "baja",
-        "privileges_required": "ninguno", "user_interaction": "ninguna",
+        "attack_vector": "no_determinado", "attack_complexity": "no_determinado",
+        "privileges_required": "no_determinado", "user_interaction": "no_determinado",
         "scope": "no_determinado", "confidentiality_impact": "no_determinado",
-        "integrity_impact": "bajo", "availability_impact": "ninguno",
+        "integrity_impact": "no_determinado", "availability_impact": "no_determinado",
     },
-    "cvss_reasoning_es": "Vector de red por el origen remoto. Alcance no determinado por falta de datos sobre otros componentes.",
+    "cvss_reasoning_es": "Factores no determinados: la entrada no trae factores observados que los sostengan.",
     "recommendation_es": "Revisar el origen de los intentos y confirmar si la cuenta objetivo existe.",
     "missing_evidence": ["Identidad del origen de los intentos"],
 }
@@ -5991,17 +5992,92 @@ class VertexSustentoImpactosTests(SimpleTestCase):
         self.assertEqual(r["contexto_ia_snapshot"]["_entrada_modelo"]["entrada_exportada"]["observed_cvss_factors"]
                          ["confidentiality_impact"], "ninguno")
 
-    def test_no_determinado_y_otros_valores_se_aceptan(self):
-        for cvss in ({}, {"confidentiality_impact": "bajo", "integrity_impact": "alto"}, {"availability_impact": "ninguno"}):
-            self.assertEqual(self._analizar(_salida_cvss(**cvss))["estado_analisis"], "COMPLETED", cvss)
+    def test_abstencion_se_acepta_y_valores_no_sostenidos_se_rechazan(self):
+        self.assertEqual(self._analizar(_salida_cvss())["estado_analisis"], "COMPLETED")
+        for cvss in ({"confidentiality_impact": "bajo", "integrity_impact": "alto"}, {"availability_impact": "ninguno"}):
+            r = self._analizar(_salida_cvss(**cvss))
+            self.assertEqual((r["estado_analisis"], r["categoria_fallo"]), ("ANALISIS_FALLIDO", "factor_sin_sustento"), cvss)
 
-    def test_funcion_pura_y_proveedor_por_defecto_sin_cambios(self):
+    def test_funcion_historica_y_proveedor_por_defecto_tambien_valida(self):
         self.assertEqual(impactos_nulos_sin_sustento(_salida_cvss(integrity_impact="ninguno"), {}), ["integrity_impact"])
         self.assertEqual(impactos_nulos_sin_sustento(_salida_cvss(integrity_impact="ninguno"),
                                                      {"observed_cvss_factors": {"integrity_impact": "ninguno"}}), [])
         r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=_ProveedorFake(
             texto=json.dumps(_salida_cvss(confidentiality_impact="ninguno"))))
-        self.assertEqual(r["estado_analisis"], "COMPLETED")                 # el flujo actual no cambia
+        self.assertEqual((r["estado_analisis"], r["categoria_fallo"]), ("ANALISIS_FALLIDO", "impacto_sin_sustento"))
+
+
+from dashboard.ia.sustento import factores_sin_sustento  # noqa: E402
+
+
+class SustentoSimetricoTests(SimpleTestCase):
+    """Sustento SIMÉTRICO de los factores CVSS: mismo criterio para todos los proveedores; nada se corrige."""
+    OBS_RED = {"observed_cvss_factors": dict(_CVSS_ND, attack_vector="red")}
+
+    def test_entrada_demo_sostiene_vector_red(self):
+        self.assertEqual(construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE)["observed_cvss_factors"],
+                         dict(_CVSS_ND, attack_vector="red"))
+
+    def test_funcion_pura_sentidos(self):
+        sentidos = lambda salida, entrada: [(x["factor"], x["sentido"]) for x in factores_sin_sustento(salida, entrada)]
+        self.assertEqual(factores_sin_sustento(_salida_cvss(), {}), [])                                   # abstención
+        self.assertEqual(factores_sin_sustento(_salida_cvss(attack_vector="red"), self.OBS_RED), [])      # sostenido
+        self.assertEqual(sentidos(_salida_cvss(confidentiality_impact="alto", scope="cambiado"), {}),
+                         [("scope", "exagera"), ("confidentiality_impact", "exagera")])
+        self.assertEqual(sentidos(_salida_cvss(integrity_impact="ninguno", availability_impact="ninguno"), {}),
+                         [("integrity_impact", "minimiza"), ("availability_impact", "minimiza")])
+        self.assertEqual(sentidos(_salida_cvss(attack_vector="fisico"), self.OBS_RED), [("attack_vector", "minimiza")])
+        self.assertEqual(sentidos(_salida_cvss(attack_vector="local"), {"observed_cvss_factors": {"attack_vector": "fisico"}}),
+                         [("attack_vector", "exagera")])
+        self.assertEqual(sentidos(_salida_cvss(integrity_impact="bajo"), {}), [("integrity_impact", "afirma_sin_sustento")])
+        # Sin factores observados válidos, nada está sostenido; sin objeto de factores, decide el contrato.
+        self.assertEqual(sentidos(_salida_cvss(attack_vector="red"), {"observed_cvss_factors": "x"}), [("attack_vector", "exagera")])
+        self.assertEqual(factores_sin_sustento({"cvss_factors": None}, self.OBS_RED), [])
+
+    def _con(self, proveedor, **cvss):
+        return analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=proveedor(texto=json.dumps(_salida_cvss(**cvss))))
+
+    def test_mismo_criterio_en_ambos_proveedores(self):
+        class _Gemini(_ProveedorFake):
+            nombre = "gemini_developer"
+        for prov in (_ProveedorFake, _Gemini):
+            self.assertEqual(self._con(prov)["estado_analisis"], "COMPLETED", prov.nombre)                 # abstención
+            self.assertEqual(self._con(prov, attack_vector="red")["estado_analisis"], "COMPLETED")          # sostenido
+            for cvss, cat in (({"confidentiality_impact": "alto", "integrity_impact": "alto"}, "factor_sin_sustento"),
+                              ({"attack_vector": "fisico"}, "factor_sin_sustento"),
+                              ({"integrity_impact": "ninguno"}, "impacto_sin_sustento"),
+                              ({"attack_vector": "red", "availability_impact": "alto"}, "factor_sin_sustento")):
+                r = self._con(prov, **cvss)
+                self.assertEqual((r["estado_analisis"], r["categoria_fallo"]), ("ANALISIS_FALLIDO", cat), (prov.nombre, cvss))
+        self.assertTrue(proveedores.VertexTunedProvider.valida_sustento_impactos)
+        self.assertTrue(proveedores.GeminiDeveloperProvider.valida_sustento_impactos)
+
+    def test_rechazo_conserva_respuesta_y_motivo_y_nunca_es_falso_positivo(self):
+        salida = dict(_salida_cvss(confidentiality_impact="ninguno", availability_impact="ninguno", scope="cambiado"),
+                      verdict="FALSO_POSITIVO", risk="LOW")
+        r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=_ProveedorFake(texto=json.dumps(salida)))
+        self.assertEqual(r["estado_analisis"], "ANALISIS_FALLIDO")
+        self.assertIsNone(r["veredicto_ia"]); self.assertIsNone(r["riesgo_ia"]); self.assertIsNone(r["factores_cvss"])
+        self.assertEqual(r["categoria_fallo"], "factor_sin_sustento")
+        self.assertIn("FALSO_POSITIVO", r["respuesta_ia_original"])                # respuesta original intacta
+        self.assertIn('"cambiado"', r["respuesta_ia_original"])
+        self.assertIn("scope=cambiado (sostenido: no_determinado; exagera)", r["motivo_fallo"])
+        diag = r["contexto_ia_snapshot"]["_diagnostico_fallo"]
+        self.assertEqual(diag["categoria"], "factor_sin_sustento")
+        self.assertEqual([(x["factor"], x["sentido"]) for x in diag["factores_sin_sustento"]],
+                         [("scope", "exagera"), ("confidentiality_impact", "minimiza"), ("availability_impact", "minimiza")])
+
+    def test_vertex_exagera_y_sostenido(self):
+        with mock.patch.dict(os.environ, _ENV_VERTEX), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token", return_value=_TOKEN_FALSO):
+            for cvss, estado in (({"attack_vector": "red"}, "COMPLETED"),
+                                 ({"confidentiality_impact": "alto", "integrity_impact": "alto", "availability_impact": "alto"},
+                                  "ANALISIS_FALLIDO")):
+                with mock.patch("dashboard.ia.proveedores.urllib.request.urlopen", return_value=_resp_vertex(_salida_cvss(**cvss))):
+                    r = analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor="vertex_tuned")
+                self.assertEqual(r["estado_analisis"], estado, cvss)
+                self.assertEqual(r["contexto_ia_snapshot"]["_entrada_modelo"]["entrada_exportada"]["observed_cvss_factors"]
+                                 ["attack_vector"], "red")                 # el ajustado ve el mismo valor sostenido
 
 
 class VertexTokenArchivoTests(SimpleTestCase):

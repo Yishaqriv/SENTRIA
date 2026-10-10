@@ -36,6 +36,7 @@ class RespuestaProveedor:
 
 class ProveedorIA(ABC):
     nombre = "abstracto"
+    valida_sustento_impactos = True     # el analizador exige sustento simétrico de los factores CVSS (sustento.py)
 
     @abstractmethod
     def analizar(self, prompt: str) -> RespuestaProveedor:
@@ -256,7 +257,7 @@ class VertexTunedProvider(ProveedorIA):
     nombre = "vertex_tuned"
     formato_entrada = "exp-entrada-1"       # el analizador le entrega la plantilla v1 + la entrada exportada
     valida_privacidad_salida = True         # el analizador valida además la privacidad de la respuesta
-    valida_sustento_impactos = True         # y que un impacto «ninguno» tenga sustento estructurado (sustento.py)
+    valida_sustento_impactos = True         # y el sustento simétrico de los factores CVSS (sustento.py)
     TIMEOUT_S = 120
     GENERACION = {"responseMimeType": "application/json", "maxOutputTokens": 8192,
                   "thinkingConfig": {"thinkingLevel": "MINIMAL"}}

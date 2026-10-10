@@ -16,7 +16,7 @@ from .contrato import parsear_json_estricto, validar_salida_ia
 from .entrada_exportacion import (CONTRATO_ENTRADA, PLANTILLA_SHA256, PLANTILLA_VERSION, TRANSFORMACIONES,
                                   EntradaNoRepresentable, texto_usuario)
 from .prompt import construir_entrada_e, construir_prompt, diagnostico_tiempo
-from .sustento import impactos_nulos_sin_sustento
+from .sustento import factores_sin_sustento, solo_impactos_nulos
 from .proveedores import ProveedorIA, nombre_proveedor_activo, obtener_proveedor
 
 RESULTADO_CLAVES = (
@@ -57,7 +57,7 @@ CAT_FALLO = (
     "proveedor_no_disponible", "proveedor_excepcion", "timeout",
     "respuesta_vacia", "respuesta_truncada", "no_json", "markdown",
     "contrato_invalido", "bloqueo_privacidad", "bloqueo_seguridad_proveedor", "entrada_no_representable",
-    "impacto_sin_sustento", "otra",
+    "impacto_sin_sustento", "factor_sin_sustento", "otra",
 )
 
 
@@ -94,6 +94,8 @@ def _categoria_fallo(motivo):
         return "no_json"
     if "no cumple el contrato" in m:
         return "contrato_invalido"
+    if "factores cvss sin sustento" in m:
+        return "factor_sin_sustento"
     if "sin sustento estructurado" in m:
         return "impacto_sin_sustento"
     if "no representable" in m:
@@ -122,7 +124,8 @@ def resultado_fallido(*, raw, motivo, proveedor, modelo, snapshot=None, diag=Non
     if isinstance(snap, dict):
         d = {"categoria": categoria, "motivo": motivo_seguro}
         if isinstance(diag, dict):
-            d.update({k: diag[k] for k in ("finish_reason", "usage", "parsed_present") if k in diag})
+            d.update({k: diag[k] for k in ("finish_reason", "usage", "parsed_present", "factores_sin_sustento")
+                      if k in diag})
         snap["_diagnostico_fallo"] = d
     return {
         "estado_analisis": "ANALISIS_FALLIDO",
@@ -255,17 +258,28 @@ def analizar_alerta(alert, activo, proveedor=None):
                 diag=diag,
             )
 
-    if getattr(prov, "valida_sustento_impactos", False):
-        sin_sustento = impactos_nulos_sin_sustento(data, entrada)
+    # Sustento SIMÉTRICO de los factores CVSS (sustento.py), para todos los proveedores salvo que uno lo desactive
+    # explícitamente (ninguno lo hace). Se compara con los factores observados que SENTRIA calculó para ESTA
+    # alerta (`entrada`): el ajustado los recibe en su entrada exportada (mismos valores) y gemini_developer recibe
+    # los datos de los que se deducen (los grupos de la regla). No se sustituyen factores: la respuesta se conserva
+    # íntegra para diagnóstico y el resultado queda ANALISIS_FALLIDO (nunca FALSO_POSITIVO).
+    if getattr(prov, "valida_sustento_impactos", True):
+        sin_sustento = factores_sin_sustento(data, entrada)
         if sin_sustento:
-            # No se sustituyen factores: la respuesta se conserva íntegra para diagnóstico.
+            if solo_impactos_nulos(sin_sustento):           # categoría histórica: impactos C/I «ninguno»
+                motivo = ("Impacto 'ninguno' sin sustento estructurado en la entrada: "
+                          f"{[x['factor'] for x in sin_sustento]}")
+            else:
+                motivo = ("Factores CVSS sin sustento estructurado en la entrada: "
+                          + "; ".join(f"{x['factor']}={x['valor']} (sostenido: {x['sostenido']}; {x['sentido']})"
+                                      for x in sin_sustento))
             return resultado_fallido(
                 raw=raw,
-                motivo=f"Impacto 'ninguno' sin sustento estructurado en la entrada: {sin_sustento}",
+                motivo=motivo,
                 proveedor=prov.nombre,
                 modelo=modelo,
                 snapshot=entrada,
-                diag=diag,
+                diag=dict(diag, factores_sin_sustento=sin_sustento),
             )
 
     return {
