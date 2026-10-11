@@ -6034,6 +6034,25 @@ class SustentoSimetricoTests(SimpleTestCase):
         self.assertEqual(sentidos(_salida_cvss(attack_vector="red"), {"observed_cvss_factors": "x"}), [("attack_vector", "exagera")])
         self.assertEqual(factores_sin_sustento({"cvss_factors": None}, self.OBS_RED), [])
 
+    def test_prompt_muestra_los_factores_que_valida_el_sustento(self):
+        # gemini_developer ve los mismos observed_cvss_factors con los que se valida su respuesta (sin reglas propias).
+        import re
+        fim = EntradaEEnriquecidaTests._alerta_fim(None)
+        for alert in (ALERTA_DEMO, fim, dict(fim, groups="ossec")):
+            entrada = construir_entrada_e(alert, ACTIVO_FAKE)
+            prompt = construir_prompt(entrada)
+            self.assertIn("Otro valor invalida el análisis.", prompt)
+            bloque = prompt.split("Factores CVSS observados (calculados por SENTRIA", 1)[1]
+            mostrados = dict(re.findall(r"^  · (\w+): (\w+)$", bloque, re.M))
+            self.assertEqual(mostrados, entrada["observed_cvss_factors"], alert["groups"])
+            self.assertEqual(factores_sin_sustento({"cvss_factors": mostrados}, entrada), [])
+            self.assertTrue(factores_sin_sustento({"cvss_factors": dict(mostrados, scope="cambiado")}, entrada))
+        self.assertEqual([construir_entrada_e(a, ACTIVO_FAKE)["observed_cvss_factors"]["attack_vector"]
+                          for a in (ALERTA_DEMO, fim, dict(fim, groups="ossec"))], ["red", "local", "no_determinado"])
+        # Sin factores observados válidos el prompt muestra «no_determinado», igual que el validador.
+        self.assertIn("  · attack_vector: no_determinado\n",
+                      construir_prompt(dict(construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE), observed_cvss_factors="x")))
+
     def _con(self, proveedor, **cvss):
         return analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=proveedor(texto=json.dumps(_salida_cvss(**cvss))))
 

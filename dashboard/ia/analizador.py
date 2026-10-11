@@ -260,8 +260,8 @@ def analizar_alerta(alert, activo, proveedor=None):
 
     # Sustento SIMÉTRICO de los factores CVSS (sustento.py), para todos los proveedores salvo que uno lo desactive
     # explícitamente (ninguno lo hace). Se compara con los factores observados que SENTRIA calculó para ESTA
-    # alerta (`entrada`): el ajustado los recibe en su entrada exportada (mismos valores) y gemini_developer recibe
-    # los datos de los que se deducen (los grupos de la regla). No se sustituyen factores: la respuesta se conserva
+    # alerta (`entrada`): el ajustado los recibe en su entrada exportada y gemini_developer en su prompt (mismos
+    # valores, `prompt._lineas_factores_observados`). No se sustituyen factores: la respuesta se conserva
     # íntegra para diagnóstico y el resultado queda ANALISIS_FALLIDO (nunca FALSO_POSITIVO).
     if getattr(prov, "valida_sustento_impactos", True):
         sin_sustento = factores_sin_sustento(data, entrada)

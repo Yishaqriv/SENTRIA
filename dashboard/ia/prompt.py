@@ -306,6 +306,11 @@ El objeto debe tener EXACTAMENTE estas claves:
 Reglas:
 - Un riesgo bajo (LOW) NO implica que sea FALSO_POSITIVO.
 - Si falta evidencia, marca los factores como "no_determinado"; no inventes.
+- Factores CVSS observados: al final de la alerta se listan los que SENTRIA
+  calculó para ella. En "cvss_factors", cada factor solo puede tener el valor
+  observado o "no_determinado". Si el observado es "no_determinado", mantén
+  "no_determinado" aunque la descripción, el tipo de evento o un escenario
+  hipotético sugieran otro valor, más o menos grave. Otro valor invalida el análisis.
 - No añadas ninguna clave extra ni comentarios.
 - "verdict" debe ser EXACTAMENTE "FALSO_POSITIVO" o "REQUIERE_ATENCION"
   (mayúsculas, sin acentos, sin sinónimos).
@@ -358,7 +363,17 @@ def construir_prompt(entrada_e):
         + f"  · eventos correlacionados: {ev.get('correlated_events', 'no_determinado')}\n"
         + f"  · fuente de telemetría: {ev.get('telemetry_source', 'no_determinado')}\n"
         + _lineas_evidencia_extra(ev)
+        + _lineas_factores_observados(entrada_e)
     )
+
+
+def _lineas_factores_observados(entrada_e):
+    """Los mismos `observed_cvss_factors` con los que sustento.factores_sin_sustento valida la respuesta."""
+    obs = entrada_e.get("observed_cvss_factors")
+    obs = obs if isinstance(obs, dict) else {}
+    return ("Factores CVSS observados (calculados por SENTRIA; únicos valores admitidos "
+            "además de \"no_determinado\"):\n"
+            + "".join(f"  · {k}: {obs.get(k, 'no_determinado')}\n" for k in CVSS_CLAVES))
 
 
 _ETIQUETAS_EXTRA = {
