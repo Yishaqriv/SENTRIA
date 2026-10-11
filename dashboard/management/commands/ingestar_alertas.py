@@ -36,8 +36,13 @@ Piloto acotado (registro persistente, ver dashboard/ia/piloto.py):
     MySQL (solo lectura); no pide token, no llama al modelo, no escribe.
   - Máx. 3 intentos por ejecución y el tope total del registro (máx. 30); cada
     intento se registra en disco ANTES de llamar, también si la llamada falla.
+  - Sin textos repetidos: se calcula el SHA-256 del texto EXACTO que recibiría
+    el modelo; si ya se envió (intento registrado o fila del proveedor en MySQL)
+    o ya apareció en esta ejecución, la alerta no se envía ni consume intento
+    (con --confirmar queda un evento `duplicada` en el registro).
 """
 import datetime
+import hashlib
 import os
 import re
 
@@ -46,7 +51,7 @@ from django.core.management.base import BaseCommand, CommandError
 from dashboard.ia import piloto as piloto_mod
 from dashboard.ia import proveedores
 from dashboard.ia.ingesta import ingestar_alerta
-from dashboard.ia.prompt import _parsear_ts
+from dashboard.ia.prompt import _parsear_ts, construir_entrada_e, construir_prompt
 from dashboard.ia.politica import cargar_politica, evaluar_elegibilidad
 from dashboard.ia.resolver import resolver_activo_por_agente
 from dashboard.models import Alert
@@ -109,8 +114,8 @@ class _ProveedorContado(proveedores.ProveedorIA):
             return proveedores.RespuestaProveedor(
                 ok=False, texto="", modelo="", error=f"anonimización: {motivo}")
         if self._antes_de_llamar is not None:
-            try:
-                self._antes_de_llamar()             # se registra ANTES de llamar: un fallo también cuenta
+            try:                                    # se registra ANTES de llamar: un fallo también cuenta
+                self._antes_de_llamar(hashlib.sha256(str(prompt).encode("utf-8")).hexdigest())
             except piloto_mod.RegistroPilotoError as e:
                 return proveedores.RespuestaProveedor(
                     ok=False, texto="", modelo="", error=f"piloto: {e}")
@@ -127,17 +132,35 @@ PROVEEDORES_ADMITIDOS = ("gemini_developer", "vertex_tuned")
 PROVEEDORES_DIRIGIDOS = PROVEEDORES_ADMITIDOS
 
 
-def _entrada_representable(raw, activo):
-    """True si la alerta cabe en `exp-entrada-1` (la representación que recibe el modelo ajustado). Sin red."""
+def _texto_exp_entrada(raw, activo):
+    """Texto exacto (plantilla v1 + `exp-entrada-1`) que recibiría el modelo ajustado, o None si no es representable."""
     from types import SimpleNamespace
     from dashboard.dataset import construir_entrada
     from dashboard.ia.entrada_exportacion import EntradaNoRepresentable, texto_usuario
-    from dashboard.ia.prompt import construir_entrada_e
     try:
-        texto_usuario(construir_entrada(SimpleNamespace(contexto_ia_snapshot=construir_entrada_e(raw, activo))))
-        return True
+        return texto_usuario(construir_entrada(SimpleNamespace(contexto_ia_snapshot=construir_entrada_e(raw, activo))))[0]
     except EntradaNoRepresentable:
-        return False
+        return None
+
+
+def _entrada_representable(raw, activo):
+    """True si la alerta cabe en `exp-entrada-1` (la representación que recibe el modelo ajustado). Sin red."""
+    return _texto_exp_entrada(raw, activo) is not None
+
+
+def _textos_ya_enviados(registro, agent_id, proveedor):
+    """
+    Piloto: SHA-256 de los textos ya enviados -> de dónde consta. Intentos del registro que lo guardaron (también
+    los que fallaron o se interrumpieron) y filas del proveedor para el agente que guardan su traza
+    (`_entrada_modelo.texto_enviado_sha256`). Lo que no tiene SHA no se reconstruye ni se inventa.
+    """
+    enviados = {h: "intento_registrado" for h in registro.textos_intentados()}
+    for snap in Alert.objects.filter(wazuh_agent_id=agent_id, proveedor_ia=proveedor).values_list(
+            "contexto_ia_snapshot", flat=True):
+        h = ((snap or {}).get("_entrada_modelo") or {}).get("texto_enviado_sha256") if isinstance(snap, dict) else None
+        if h:
+            enviados.setdefault(h, "mysql")
+    return enviados
 
 
 def _preparar_proveedor(proveedor, *, conf, tope, agent_id, obtener_proveedor, log, antes_de_llamar=None):
@@ -233,6 +256,7 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
 
     log(f"Agente {agent_id} -> activo {activo.identificador}. "
         f"scan-limit {scan_limit}, max-análisis {max_analisis}.")
+    enviados = _textos_ya_enviados(registro, agent_id, proveedor) if registro is not None else {}
 
     politica = cargar_politica()
     prov = _preparar_proveedor(proveedor, conf=conf, tope=max_analisis, agent_id=agent_id,
@@ -262,7 +286,8 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
              elegibles=0, elegibles_seleccionadas=0, elegibles_no_seleccionadas=0,
              procedencia_completada=0, completed=0, analisis_fallido=0,
              falso_positivo=0, requiere_atencion=0,
-             no_representables=0, ya_existentes=0, anteriores_al_piloto=0, reservadas=0, seleccion=[])
+             no_representables=0, ya_existentes=0, anteriores_al_piloto=0, reservadas=0, texto_duplicado=0,
+             seleccion=[])
 
     for raw in crudas:
         c['candidatas'] += 1
@@ -302,9 +327,24 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
             # `ingestar_lote`). Así el comando tiene huella mínima en MySQL.
             continue
 
-        if exige_representable and not _entrada_representable(raw, activo):
+        texto = _texto_exp_entrada(raw, activo) if exige_representable else None
+        if exige_representable and texto is None:
             c['no_representables'] += 1     # no cabe en exp-entrada-1: no se persiste ni se llama
             continue
+
+        texto_sha = None
+        if registro is not None:
+            # Piloto: un texto idéntico a uno ya enviado (o ya visto en esta ejecución) no se envía de nuevo.
+            # Depende solo de la entrada; se conserva el orden y vale la primera aparición.
+            if texto is None:
+                texto = construir_prompt(construir_entrada_e(raw, activo))
+            texto_sha = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+            if texto_sha in enviados:
+                c['texto_duplicado'] += 1
+                if conf:
+                    registro.registrar_duplicada(osid, texto_sha256=texto_sha, previo=enviados[texto_sha])
+                continue
+            enviados[texto_sha] = "misma_ejecucion"
 
         c['elegibles'] += 1
 
@@ -317,13 +357,14 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
         if dry:
             # Ensayo: qué se procesaría (sin escritura, sin proveedor, sin opensearch_id).
             c['seleccion'].append({"regla": str(raw.get('rule_id') or ''), "nivel": raw.get('level'),
-                                   "fecha": str(raw.get('timestamp') or '')[:19], "grupos": raw.get('groups') or ''})
+                                   "fecha": str(raw.get('timestamp') or '')[:19], "grupos": raw.get('groups') or '',
+                                   "texto": (texto_sha or '')[:12]})
             continue
 
         antes = (existente.wazuh_agent_id, existente.wazuh_rule_id,
                  existente.wazuh_rule_groups) if existente else None
         if registro is not None:
-            registro.preparar(osid)
+            registro.preparar(osid, texto_sha256=texto_sha)
         obj, _accion = ingestar_alerta(raw, resolver=_resolver, politica=politica, proveedor=prov)
         obj.refresh_from_db()
         if registro is not None:
@@ -589,8 +630,9 @@ class Command(BaseCommand):
         if 'piloto' in c:
             p = c['piloto']
             self.stdout.write(f"  piloto: ya existentes={c['ya_existentes']} reservadas={c['reservadas']} "
-                              f"anteriores al inicio={c['anteriores_al_piloto']}")
+                              f"anteriores al inicio={c['anteriores_al_piloto']} texto duplicado={c['texto_duplicado']}")
             self.stdout.write(f"  piloto: reserva {p['reserva_version']} sello {p['reserva_sello'][:16]}…")
             self.stdout.write(f"  piloto: intentos {p['usados']}/{p['tope_total']} (restan {p['restantes']})")
         for i, sel in enumerate(c['seleccion'], 1):
-            self.stdout.write(f"  [ensayo] {i}: regla {sel['regla']} nivel {sel['nivel']} {sel['fecha']} {sel['grupos']}")
+            self.stdout.write(f"  [ensayo] {i}: regla {sel['regla']} nivel {sel['nivel']} {sel['fecha']} {sel['grupos']}"
+                              + (f" texto {sel['texto']}" if sel['texto'] else ""))

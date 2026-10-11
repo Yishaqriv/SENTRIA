@@ -6442,8 +6442,10 @@ class _PilotoBase:
             "%Y-%m-%dT%H:%M:%SZ")
 
     def _doc(self, i, *, ts=None, groups="syslog,sshd,authentication_failures", level=10, rule="5712"):
+        # La descripción varía con `i`: cada documento es un texto distinto (la deduplicación del piloto
+        # trata los textos idénticos aparte; ver PilotoTextosDuplicadosTests).
         return {"opensearch_id": f"LOTE-VTX-{i}", "agent_id": "000", "level": level, "rule_id": rule,
-                "description": "sshd: brute force trying to get access to the system.", "groups": groups,
+                "description": f"sshd: brute force trying to get access to the system (caso {i}).", "groups": groups,
                 "timestamp": ts or self.futuro}
 
     HUELLA = "ab" * 32
@@ -6662,6 +6664,96 @@ class IngestaLotesVertexYPilotoTests(_PilotoBase, TestCase):
         self.assertNotIn("LOTE-VTX", texto)
         self.assertNotIn(_TOKEN_FALSO, texto)
         self.assertIn('"tipo": "resultado"', texto)
+
+
+from dashboard.management.commands.ingestar_alertas import _texto_exp_entrada  # noqa: E402
+
+
+class PilotoTextosDuplicadosTests(_PilotoBase, TestCase):
+    """Piloto: un texto exacto idéntico a uno ya enviado (o ya visto en la ejecución) no se envía ni consume intento."""
+
+    def _gemelo(self, i, sufijo):
+        return dict(self._doc(i), opensearch_id=f"LOTE-VTX-{i}{sufijo}")      # mismo texto, otra alerta
+
+    def _eventos(self):
+        return [json.loads(l) for l in open(self.ruta, encoding="utf-8")]
+
+    def test_ensayo_cuenta_duplicadas_sin_escribir(self):
+        self._crear()
+        antes = open(self.ruta, "rb").read()
+        r, tok, url, _ = self._piloto([self._doc(1), self._gemelo(1, "b"), self._doc(2)], dry=True, conf=False)
+        self.assertEqual((r["texto_duplicado"], len(r["seleccion"]), tok.call_count, url.call_count), (1, 2, 0, 0))
+        self.assertEqual((open(self.ruta, "rb").read(), Alert.objects.count()), (antes, 0))
+
+    def test_mismo_texto_una_sola_solicitud_y_la_duplicada_no_consume(self):
+        self._crear(tope=5)
+        r, _, url, _ = self._piloto([self._doc(1), self._gemelo(1, "b"), self._doc(2)])
+        self.assertEqual((url.call_count, r["texto_duplicado"], self._usados()), (2, 1, 2))
+        self.assertFalse(Alert.objects.filter(opensearch_id="LOTE-VTX-1b").exists())
+        ev = self._eventos()
+        intentos = [e for e in ev if e["tipo"] == "intento"]
+        dup = [e for e in ev if e["tipo"] == "duplicada"]
+        self.assertEqual(len(dup), 1)
+        self.assertEqual(dup[0]["previo"], "misma_ejecucion")
+        texto = _texto_exp_entrada(self._doc(1), self.srv)
+        self.assertEqual(intentos[0]["texto_sha256"], hashlib.sha256(texto.encode("utf-8")).hexdigest())
+        self.assertEqual(dup[0]["texto_sha256"], intentos[0]["texto_sha256"])
+        # La traza del texto enviado coincide con el SHA del intento (mismo texto, misma construcción).
+        a = Alert.objects.get(opensearch_id="LOTE-VTX-1")
+        self.assertEqual(a.contexto_ia_snapshot["_entrada_modelo"]["texto_enviado_sha256"], intentos[0]["texto_sha256"])
+        # Relanzar: la duplicada no se vuelve a anotar y no hay llamadas nuevas.
+        r2, _, url2, _ = self._piloto([self._gemelo(1, "b")])
+        self.assertEqual((url2.call_count, r2["texto_duplicado"], self._usados()), (0, 1, 2))
+        self.assertEqual(len([e for e in self._eventos() if e["tipo"] == "duplicada"]), 1)
+
+    def test_fallo_o_interrupcion_no_permiten_repetir_el_texto(self):
+        self._crear(tope=5)
+        err = _urlerror.HTTPError("u", 500, "x", {}, None)
+        self._piloto([self._doc(1)], urlopen={"side_effect": err})                     # fallo HTTP: intento con SHA
+        r, _, url, _ = self._piloto([self._gemelo(1, "b")])
+        self.assertEqual((url.call_count, r["texto_duplicado"], self._usados()), (0, 1, 1))
+        with mock.patch.object(proveedores.VertexTunedProvider, "analizar", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self._piloto([self._doc(2)])                                           # interrumpido
+        a2 = Alert.objects.get(opensearch_id="LOTE-VTX-2")             # la fila PENDING existe, pero sin traza
+        self.assertNotIn("_entrada_modelo", a2.contexto_ia_snapshot or {})
+        r, _, url, _ = self._piloto([self._gemelo(2, "b")])
+        self.assertEqual((url.call_count, r["texto_duplicado"], self._usados()), (0, 1, 2))
+        previos = [e["previo"] for e in self._eventos() if e["tipo"] == "duplicada"]
+        self.assertEqual(previos, ["intento_registrado", "intento_registrado"])     # consta por el registro
+
+    def test_intento_antiguo_sin_sha_no_se_inventa_y_mysql_cubre_el_texto(self):
+        self._crear()
+        texto = _texto_exp_entrada(self._doc(1), self.srv)
+        sha = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+        with open(self.ruta, "a", encoding="utf-8") as f:                 # intento con el formato anterior
+            f.write(json.dumps({"tipo": "intento", "n": 1, "alerta": piloto_mod.huella_opensearch_id("ANTIGUA"),
+                                "utc": "2026-10-11T00:00:00+00:00"}) + "\n")
+        Alert.objects.create(titulo="t", descripcion="d", estado="Pendiente", opensearch_id="ANTIGUA",
+                             estado_analisis="COMPLETED", proveedor_ia="vertex_tuned", wazuh_agent_id="000",
+                             contexto_ia_snapshot={"_entrada_modelo": {"texto_enviado_sha256": sha}})
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            self.assertEqual((reg.usados, reg.textos_intentados()), (1, set()))
+        r, _, url, _ = self._piloto([self._doc(1), self._doc(2)])
+        self.assertEqual((url.call_count, r["texto_duplicado"], self._usados()), (1, 1, 2))
+        dup = [e for e in self._eventos() if e["tipo"] == "duplicada"]
+        self.assertEqual([(d["previo"], d["texto_sha256"]) for d in dup], [("mysql", sha)])
+
+    def test_registro_rechaza_texto_distinto_al_seleccionado_o_ya_intentado(self):
+        self._crear()
+        with piloto_mod.RegistroPiloto(self.ruta) as reg:
+            reg.preparar("A", texto_sha256="a" * 64)
+            with self.assertRaises(piloto_mod.RegistroPilotoError):
+                reg.registrar_intento("b" * 64)
+            reg.registrar_intento("a" * 64)
+            reg.preparar("B", texto_sha256="a" * 64)
+            with self.assertRaises(piloto_mod.RegistroPilotoError):
+                reg.registrar_intento("a" * 64)
+            self.assertEqual(reg.usados, 1)
+
+    def test_fuera_del_piloto_sin_cambios(self):
+        r, _, url, _ = self._correr([self._doc(1), self._gemelo(1, "b")])        # lotes sin registro
+        self.assertEqual((url.call_count, r["completed"], r["texto_duplicado"]), (2, 2, 0))
 
 
 class VertexComprobarCredencialesTests(SimpleTestCase):

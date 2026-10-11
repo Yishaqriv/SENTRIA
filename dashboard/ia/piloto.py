@@ -4,7 +4,10 @@ Registro PERSISTENTE del piloto acotado (`ingestar_alertas --piloto`).
 Un archivo privado (600, fuera del repositorio) con una línea JSON por evento:
   - `inicio`: agente, proveedor, tope total y `inicio_utc` (sólo cuentan alertas con fecha >= inicio_utc);
   - `intento`: se escribe y se sincroniza a disco ANTES de cada llamada al modelo, así que una llamada fallida,
-    interrumpida o con error de red también cuenta;
+    interrumpida o con error de red también cuenta. Desde la deduplicación lleva `texto_sha256` (SHA-256 del texto
+    exacto enviado); los intentos anteriores no lo tienen y no se les inventa;
+  - `duplicada`: alerta cuyo texto ya se envió (intento registrado o fila del proveedor en MySQL) o ya apareció en la
+    misma ejecución. No es un intento: no llama al modelo ni consume el tope. Una sola vez por alerta;
   - `resultado`: id de la fila y estado del análisis, después de guardar.
 
 Garantías:
@@ -114,8 +117,10 @@ class RegistroPiloto:
             raise RegistroPilotoError("registro del piloto sin cabecera válida")
         self.cabecera = eventos[0]
         self.intentos = [e for e in eventos[1:] if e.get("tipo") == "intento"]
+        self._duplicadas = {e.get("alerta") for e in eventos[1:] if e.get("tipo") == "duplicada"}
         self.inicio_utc = datetime.datetime.fromisoformat(self.cabecera["inicio_utc"])
         self._pendiente = None
+        self._texto_esperado = None
 
     def __enter__(self):
         return self
@@ -151,22 +156,46 @@ class RegistroPiloto:
     def huellas_intentadas(self):
         return {e.get("alerta") for e in self.intentos}
 
+    def textos_intentados(self):
+        """SHA-256 de los textos de los intentos que lo registraron (los antiguos no lo tienen: no se inventa)."""
+        return {e["texto_sha256"] for e in self.intentos if e.get("texto_sha256")}
+
     def _escribir(self, evento):
         self._f.write(json.dumps(evento, ensure_ascii=False) + "\n")
         self._f.flush()
         os.fsync(self._f.fileno())
 
-    def preparar(self, opensearch_id):
-        """Alerta a la que se atribuirá el próximo intento."""
+    def preparar(self, opensearch_id, texto_sha256=None):
+        """Alerta a la que se atribuirá el próximo intento y SHA del texto seleccionado para ella."""
         self._pendiente = huella_opensearch_id(opensearch_id)
+        self._texto_esperado = texto_sha256
 
-    def registrar_intento(self):
-        """Se llama justo ANTES de enviar al modelo. Si el tope total está agotado, lanza (no se llama)."""
+    def registrar_intento(self, texto_sha256=None):
+        """
+        Se llama justo ANTES de enviar al modelo, con el SHA-256 del texto que se va a enviar. Lanza (y no se llama)
+        si el tope total está agotado, si el texto no es el seleccionado o si ese texto ya tiene un intento.
+        """
         if self.restantes <= 0:
             raise RegistroPilotoError("tope total del piloto agotado")
+        if self._texto_esperado and texto_sha256 != self._texto_esperado:
+            raise RegistroPilotoError("el texto a enviar no coincide con el seleccionado")
+        if texto_sha256 and texto_sha256 in self.textos_intentados():
+            raise RegistroPilotoError("ese texto ya tiene un intento registrado")
         evento = {"tipo": "intento", "n": self.usados + 1, "alerta": self._pendiente, "utc": _ahora().isoformat()}
+        if texto_sha256:
+            evento["texto_sha256"] = texto_sha256
         self._escribir(evento)
         self.intentos.append(evento)
+
+    def registrar_duplicada(self, opensearch_id, *, texto_sha256, previo):
+        """Constancia de una alerta no enviada por repetir un texto (`previo`: de dónde consta). Una vez por alerta."""
+        alerta = huella_opensearch_id(opensearch_id)
+        if alerta in self._duplicadas:
+            return False
+        self._escribir({"tipo": "duplicada", "alerta": alerta, "texto_sha256": texto_sha256, "previo": previo,
+                        "utc": _ahora().isoformat()})
+        self._duplicadas.add(alerta)
+        return True
 
     def registrar_ejecucion(self, reserva, *, modo):
         """Deja constancia, antes de cualquier llamada, de la versión y la huella del manifiesto de reserva usado."""
