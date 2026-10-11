@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    DJANGO_DEBUG=False
 
 WORKDIR /app
 
@@ -18,12 +19,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && useradd --system --uid 10001 --no-create-home sentria \
+    && chown -R sentria /app
+# Sin privilegios de root dentro del contenedor.
+USER sentria
 
 EXPOSE 8000
 
 # Toda la configuración (SECRET_KEY, DB, Wazuh, Gemini) se pasa por variables de
 # entorno en tiempo de ejecución (docker run --env-file .env / docker-compose),
 # nunca se hornea en la imagen. Ver .env.example para las variables requeridas.
+# DEBUG queda desactivado por defecto. Las migraciones solo se aplican al arrancar
+# con SENTRIA_MIGRAR_AL_ARRANCAR=1 (ver docker-entrypoint.sh).
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["gunicorn", "sentria_project.wsgi:application", "--bind", "0.0.0.0:8000"]
+# Sin socket de control de gunicorn (gestión en caliente con gunicornc): en el contenedor no se usa y,
+# con un usuario sin directorio personal, intentaría crearlo en $HOME y fallaría.
+CMD ["gunicorn", "sentria_project.wsgi:application", "--bind", "0.0.0.0:8000", "--no-control-socket"]
