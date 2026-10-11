@@ -305,6 +305,7 @@ El objeto debe tener EXACTAMENTE estas claves:
 
 Reglas:
 - Un riesgo bajo (LOW) NO implica que sea FALSO_POSITIVO.
+- El nivel de Wazuh no determina automáticamente el riesgo ni el veredicto.
 - Si falta evidencia, marca los factores como "no_determinado"; no inventes.
 - Factores CVSS observados: al final de la alerta se listan los que SENTRIA
   calculó para ella. En "cvss_factors", cada factor solo puede tener el valor

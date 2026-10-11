@@ -6053,6 +6053,12 @@ class SustentoSimetricoTests(SimpleTestCase):
         self.assertIn("  · attack_vector: no_determinado\n",
                       construir_prompt(dict(construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE), observed_cvss_factors="x")))
 
+    def test_prompt_incluye_la_regla_aprobada_del_nivel_de_wazuh(self):
+        # Misma redacción que la regla aprobada de la plantilla v1 (sellada), sin el resto de la plantilla.
+        regla = "El nivel de Wazuh no determina automáticamente el riesgo ni el veredicto."
+        self.assertIn(f"    · {regla}\n", _ee.plantilla_v1())
+        self.assertIn(f"\n- {regla}\n", construir_prompt(construir_entrada_e(ALERTA_DEMO, ACTIVO_FAKE)))
+
     def _con(self, proveedor, **cvss):
         return analizar_alerta(ALERTA_DEMO, ACTIVO_FAKE, proveedor=proveedor(texto=json.dumps(_salida_cvss(**cvss))))
 
