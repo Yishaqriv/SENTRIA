@@ -18,6 +18,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         r = reclasificar_alertas_pendientes(pausa_segundos=options['pausa'])
+        if r.get('bloqueadas_experimento'):
+            self.stdout.write(f"{r['bloqueadas_experimento']} alerta(s) de prueba controlada excluida(s) (sin reintentos).")
         if r['total'] == 0:
             self.stdout.write(self.style.SUCCESS("No hay alertas para reclasificar."))
             return

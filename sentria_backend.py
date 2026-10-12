@@ -270,9 +270,9 @@ def _normalizar_hit(hit):
     }
 
 
-def _get_search(query, timeout=15):
+def _get_search(query, timeout=15, tls_huella=None):
     """`GET .../_search` para lecturas por `_id` (solo lectura), con la huella TLS fijada."""
-    return _consultar_indexador(query, timeout=timeout)
+    return _consultar_indexador(query, timeout=timeout, tls_huella=tls_huella)
 
 
 def _query_por_ids(opensearch_ids, agent_id=None):
@@ -285,9 +285,10 @@ def _query_por_ids(opensearch_ids, agent_id=None):
     return {"size": len(opensearch_ids), "_source": _SOURCE_FIELDS, "query": consulta}
 
 
-def get_alert_by_id(opensearch_id, agent_id=None):
-    """Lectura de UN documento de Wazuh por su `_id` (para reintentar un análisis)."""
-    response = _get_search(_query_por_ids([opensearch_id], agent_id))
+def get_alert_by_id(opensearch_id, agent_id=None, tls_huella=None):
+    """Lectura de UN documento de Wazuh por su `_id` (para reintentar un análisis). `tls_huella`: como en
+    `get_latest_alerts` (si falta, WAZUH_TLS_SHA256 del entorno)."""
+    response = _get_search(_query_por_ids([opensearch_id], agent_id), tls_huella=tls_huella)
     hits = response.json().get("hits", {}).get("hits", [])
     return _normalizar_hit(hits[0]) if hits else None
 

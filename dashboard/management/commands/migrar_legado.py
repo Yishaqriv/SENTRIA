@@ -49,7 +49,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from dashboard.ia import proveedores
-from dashboard.ia.ingesta import _enriquecer_procedencia, ingestar_alerta
+from dashboard.ia.ingesta import _enriquecer_procedencia, es_prueba_controlada, ingestar_alerta
 from dashboard.ia.legado import diagnosticar_legado
 from dashboard.ia.persistencia import aplicar_omision
 from dashboard.ia.politica import cargar_politica, evaluar_elegibilidad
@@ -161,7 +161,7 @@ def procesar_migracion_legado(*, scan_limit, max_analisis, dry, conf, agent_id=N
         gemini_autorizado=False,
         scan_limit=scan_limit, max_analisis=max_analisis,
         diagnostico=diag, migradas=0, migradas_omitidas=0, requieren_gemini=0,
-        rechazadas_otro_agente=0, sin_documento=0, fallidas=0, llamadas_reales=0,
+        rechazadas_otro_agente=0, sin_documento=0, fallidas=0, llamadas_reales=0, bloqueadas_experimento=0,
     )
 
     if dry:
@@ -212,6 +212,9 @@ def procesar_migracion_legado(*, scan_limit, max_analisis, dry, conf, agent_id=N
 
     analizadas = 0
     for alerta in candidatas:
+        if es_prueba_controlada(alerta):     # defensa en profundidad: nunca se migra ni se reanaliza
+            resultado['bloqueadas_experimento'] += 1
+            continue
         try:
             raw = get_uno(alerta.opensearch_id, agent_id=agent_id)
         except Exception:
@@ -285,5 +288,7 @@ class Command(BaseCommand):
         self.stdout.write(f"  requieren Gemini:       {r['requieren_gemini']}")
         self.stdout.write(f"  rechazadas otro agente: {r['rechazadas_otro_agente']}")
         self.stdout.write(f"  sin documento:          {r['sin_documento']}")
+        if r['bloqueadas_experimento']:
+            self.stdout.write(f"  prueba controlada:      {r['bloqueadas_experimento']}  (no se tocan)")
         self.stdout.write(f"  fallidas:               {r['fallidas']}")
         self.stdout.write(f"  llamadas reales:        {r['llamadas_reales']}  (tope {r['max_analisis']})")

@@ -146,7 +146,7 @@ def resultado_fallido(*, raw, motivo, proveedor, modelo, snapshot=None, diag=Non
     }
 
 
-def analizar_alerta(alert, activo, proveedor=None):
+def analizar_alerta(alert, activo, proveedor=None, procedencia=None):
     """
     `alert`:  dict con 'description'/'descripcion', 'level'/'severidad',
               'groups', 'rule_id', 'timestamp'.
@@ -154,11 +154,15 @@ def analizar_alerta(alert, activo, proveedor=None):
               Es obligatorio: una alerta sin activo NO llega aquí (la política
               la marca OMITIDO_POLITICA / SIN_CONTEXTO_ACTIVO).
     `proveedor`: None (usa IA_PROVIDER), un nombre str, o una instancia ProveedorIA.
+    `procedencia`: solo pruebas controladas (`dashboard.ia.piloto`): dict que se guarda tal cual en el snapshot
+              como `_experimento`. Capa P: no llega al prompt, ni al texto del modelo ajustado, ni a la huella.
     """
     entrada = construir_entrada_e(alert, activo)
     prompt = construir_prompt(entrada)
     # Capa P en el snapshot (no llega al prompt ni al candidato): hora del evento usada y recepción.
     entrada["_diagnostico_tiempo"] = diagnostico_tiempo(alert, activo)
+    if procedencia is not None:
+        entrada["_experimento"] = dict(procedencia)
 
     if isinstance(proveedor, ProveedorIA):
         prov = proveedor

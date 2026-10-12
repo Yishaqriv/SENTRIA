@@ -76,13 +76,27 @@ def _enriquecer_procedencia(alerta, alert):
     return cambios
 
 
-def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None):
+BLOQUEADA_EXPERIMENTO = "bloqueada_experimento"
+
+
+def es_prueba_controlada(alerta):
+    """
+    True si la fila procede de una prueba controlada (`_experimento` en su snapshot, `dashboard.ia.piloto`).
+    Sus análisis se cuentan en el registro del experimento, sin reintentos: ninguna acción ordinaria
+    (reintento individual, reclasificación por lote, actualización, ingesta por lotes, migración) la reanaliza.
+    """
+    snap = getattr(alerta, "contexto_ia_snapshot", None)
+    return isinstance(snap, dict) and "_experimento" in snap
+
+
+def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, procedencia=None):
     """
     Procesa UNA alerta cruda. Devuelve (Alert, accion) con accion en
     {'duplicada','omitida','analizada','fallida'} para una alerta NUEVA, o
     'recuperada:<omitida|analizada|fallida>' cuando una alerta ya existente y
     no COMPLETED se reprocesa (dedup que NO impide la recuperación explícita).
-    Aísla su propio fallo.
+    Aísla su propio fallo. `procedencia` (solo alertas NUEVAS de una prueba controlada) se guarda en el snapshot
+    como `_experimento`; una alerta existente nunca la recibe.
     """
     politica = politica or cargar_politica()
     opensearch_id = alert.get("opensearch_id")
@@ -90,6 +104,10 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None):
     if opensearch_id:
         existente = Alert.objects.filter(opensearch_id=opensearch_id).first()
         if existente is not None:
+            if procedencia is not None:     # una prueba controlada solo analiza alertas nuevas
+                raise ValueError("procedencia de prueba controlada sobre una alerta ya existente")
+            if es_prueba_controlada(existente):     # sin reintentos: no se toca la fila ni se llama al modelo
+                return existente, BLOQUEADA_EXPERIMENTO
             # COMPLETED (o con corrección humana) -> intocable: no-op.
             if existente.estado_analisis == "COMPLETED":
                 return existente, "duplicada"
@@ -120,6 +138,8 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None):
             wazuh_rule_id=(str(alert["rule_id"]) if alert.get("rule_id") not in (None, "") else None),
             wazuh_rule_groups=_grupos_lista(alert.get("groups")) or None,
             wazuh_agent_id=(str(alert["agent_id"]) if alert.get("agent_id") not in (None, "") else None),
+            # La procedencia queda desde la creación: un fallo antes del análisis no la pierde.
+            contexto_ia_snapshot=({"_experimento": dict(procedencia)} if procedencia is not None else None),
         )
 
     tiene_activo = bool(activo and getattr(activo, "activo", True))
@@ -131,7 +151,7 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None):
         return obj, "omitida"
 
     try:
-        resultado = analizar_alerta(alert, activo, proveedor=proveedor)
+        resultado = analizar_alerta(alert, activo, proveedor=proveedor, procedencia=procedencia)
         with transaction.atomic():
             aplicar_resultado(obj, resultado)
     except Exception as e:  # aísla el fallo de esta alerta
@@ -151,7 +171,7 @@ def ingestar_lote(alertas, *, resolver=None, politica=None, proveedor=None):
     """Procesa una lista de alertas crudas. El fallo de una NO detiene el resto."""
     politica = politica or cargar_politica()
     c = {"total": 0, "nuevas": 0, "duplicadas": 0, "recuperadas": 0,
-         "omitidas": 0, "analizadas": 0, "fallidas": 0}
+         "omitidas": 0, "analizadas": 0, "fallidas": 0, "bloqueadas_experimento": 0}
     _plural = {"analizada": "analizadas", "omitida": "omitidas", "fallida": "fallidas",
                "completed_sin_cambios": "duplicadas"}
     for alert in alertas:
@@ -164,7 +184,9 @@ def ingestar_lote(alertas, *, resolver=None, politica=None, proveedor=None):
             c["nuevas"] += 1
             c["fallidas"] += 1
             continue
-        if accion == "duplicada":
+        if accion == BLOQUEADA_EXPERIMENTO:
+            c["bloqueadas_experimento"] += 1
+        elif accion == "duplicada":
             c["duplicadas"] += 1
         elif accion.startswith("recuperada:"):
             real = accion.split(":", 1)[1]
@@ -203,8 +225,12 @@ def reanalizar_alerta(alerta, *, politica=None, proveedor=None, resolver=None, a
     - Re-aplica la POLÍTICA vigente (`settings.IA_POLITICA`).
     - Un reintento nunca convierte un error en FALSO_POSITIVO
       (`resultado_fallido`/`aplicar_omision` fuerzan `veredicto_ia=None`).
-    -> str acción {'completed_sin_cambios','omitida','analizada','fallida'}.
+    - NUNCA reanaliza una alerta de prueba controlada (-> 'bloqueada_experimento'): ni llama al
+      modelo ni modifica la fila.
+    -> str acción {'bloqueada_experimento','completed_sin_cambios','omitida','analizada','fallida'}.
     """
+    if es_prueba_controlada(alerta):
+        return BLOQUEADA_EXPERIMENTO
     if alerta.estado_analisis == "COMPLETED":
         return "completed_sin_cambios"
     politica = politica or cargar_politica()

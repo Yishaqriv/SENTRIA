@@ -7331,3 +7331,648 @@ class MasFiltrosTests(TestCase):
         self.assertIn("Revisión: corregida", body)
         self.assertIn('<input type="hidden" name="revision" value="corregida">', body)
         self.assertIn('<input type="hidden" name="severidad" value="alta">', body)
+
+
+from dashboard.management.commands.ingestar_alertas import procesar_experimento_por_opensearch_id  # noqa: E402
+
+
+class _ExperimentoBase(_PilotoBase):
+    """Auxiliares (sin pruebas propias) de las pruebas controladas con registro de experimento."""
+    EXP = "FIM-PRUEBA-1"
+
+    def setUp(self):
+        super().setUp()
+        base = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)).replace(
+            hour=10, minute=0, second=0, microsecond=0)
+        self.ini, self.fin = base, base + datetime.timedelta(hours=2)
+        self.dentro = (base + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.fuera = (base + datetime.timedelta(hours=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.ruta_exp = os.path.join(self.dir, "experimento.jsonl")
+
+    # -- auxiliares --
+    def _exp_crear(self, *, ruta=None, experimento=None, tope=4, reglas=("5712",), sesiones=None):
+        ruta = ruta or self.ruta_exp
+        sesiones = sesiones or [(self.ini, self.fin)]
+        piloto_mod.crear_experimento(ruta, agente="000", proveedor="vertex_tuned", tope_total=tope,
+                                     experimento=experimento or self.EXP,
+                                     sesiones=[(i.isoformat(), f.isoformat()) for i, f in sesiones],
+                                     reglas=reglas, plan_sello="cd" * 32)
+        with piloto_mod.RegistroPiloto(ruta) as reg:
+            return reg.huella_cabecera
+
+    def _exp_correr(self, doc, *, dry=False, ruta=None, urlopen=None, tls="ab" * 32, reserva="vinculada", get_uno=None):
+        """`reserva="vinculada"`: reserva sellada con la sesión que vincula ESTE registro (caso normal)."""
+        ruta = ruta or self.ruta_exp
+        with mock.patch.dict(os.environ, _ENV_VERTEX), \
+                mock.patch.object(proveedores.VertexTunedProvider, "_token", return_value=_TOKEN_FALSO) as tok, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen",
+                           **(urlopen or {"return_value": _resp_vertex(_salida_cvss())})) as url:
+            os.environ.pop("GEMINI_API_KEY", None)
+            try:
+                with piloto_mod.RegistroPiloto(ruta) as reg:
+                    if reserva == "vinculada":
+                        reserva = self._reserva(sesiones=[self._sesion(reg.huella_cabecera, ruta=ruta)],
+                                                nombre="reserva_vinculada.json")
+                    r = procesar_experimento_por_opensearch_id(
+                        doc["opensearch_id"], "000", registro=reg, reserva=reserva, tls_huella=tls, dry=dry,
+                        conf=not dry, get_uno=get_uno or (lambda _id: doc))
+            except _CommandError as e:
+                r = e
+        self.tokens_pedidos = tok.call_count
+        return r, url
+
+    def _sesion(self, h, *, experimento=None, ruta=None, ini=None, fin=None):
+        return {"agente": "000", "inicio_utc": (ini or self.ini).isoformat(), "fin_utc": (fin or self.fin).isoformat(),
+                "motivo": "prueba_controlada", "experimento": experimento or self.EXP,
+                "registro": ruta or self.ruta_exp, "registro_cabecera_sha256": h}
+
+    def _escenario(self):
+        """Piloto natural creado ANTES; experimento con un análisis real (fila con procedencia)."""
+        self._crear(tope=3)
+        h = self._exp_crear()
+        doc = self._doc(101, ts=self.dentro)
+        r, url = self._exp_correr(doc)
+        self.assertEqual((r["llamadas_reales"], url.call_count), (1, 1))
+        return h, doc
+
+    def _natural(self, crudas, reserva, **kw):
+        log = []
+        r, _tok, url, _leido = self._piloto(crudas, reserva=reserva, log=log.append, **kw)
+        return r, url, log
+
+
+
+class PruebaControladaProcedenciaTests(_ExperimentoBase, TestCase):
+    """
+    Prueba controlada con registro propio: el análisis lleva procedencia verdadera (`_experimento`) y el piloto
+    natural solo deja fuera de su contabilidad una fila si la vincula con la reserva sellada, la cabecera exacta del
+    registro del experimento y su intento previo. La marca sola nunca basta; la coherencia natural se conserva.
+    """
+
+    # -- registro del experimento --
+    def test_crear_experimento_y_registros_no_intercambiables(self):
+        h = self._exp_crear()
+        with piloto_mod.RegistroPiloto(self.ruta_exp) as reg:
+            self.assertTrue(reg.es_experimento)
+            self.assertEqual((reg.experimento, reg.reglas, reg.huella_cabecera), (self.EXP, {"5712"}, h))
+            self.assertTrue(reg.en_sesion(self.ini + datetime.timedelta(minutes=1)))
+            self.assertFalse(reg.en_sesion(self.fin + datetime.timedelta(minutes=1)))
+        for kw in ({"sesiones": []}, {"plan_sello": "x"}, {"experimento": "no válido!"}, {"reglas": []},
+                   {"sesiones": [("2026-10-12T10:00:00", "2026-10-12T11:00:00")]}):     # sin zona
+            args = dict(agente="000", proveedor="vertex_tuned", tope_total=4, experimento=self.EXP,
+                        sesiones=[(self.ini.isoformat(), self.fin.isoformat())], reglas=["5712"], plan_sello="cd" * 32)
+            args.update(kw)
+            with self.assertRaises(piloto_mod.RegistroPilotoError):
+                piloto_mod.crear_experimento(os.path.join(self.dir, "otro.jsonl"), **args)
+        with self.assertRaises(piloto_mod.RegistroPilotoError):          # O_EXCL: nunca se reinicia
+            self._exp_crear()
+        # Un registro de experimento no vale como natural, ni el natural como experimento.
+        with piloto_mod.RegistroPiloto(self.ruta_exp) as reg:
+            r, _tok, url, leido = self._correr([self._doc(1)], registro=reg, reserva=self._reserva(), tls_huella=self.HUELLA)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("prueba controlada", str(r))
+        self._crear()
+        r, url = self._exp_correr(self._doc(2, ts=self.dentro), ruta=self.ruta)
+        self.assertIsInstance(r, _CommandError)
+        self.assertEqual((url.call_count, Alert.objects.count()), (0, 0))
+
+    def test_experimento_dry_run_no_llama_ni_escribe(self):
+        self._exp_crear()
+        antes = open(self.ruta_exp, "rb").read()
+        r, url = self._exp_correr(self._doc(3, ts=self.dentro), dry=True)
+        self.assertEqual((r["modo"], r["llamadas_reales"], url.call_count, Alert.objects.count()), ("dry-run", 0, 0, 0))
+        self.assertEqual(open(self.ruta_exp, "rb").read(), antes)
+
+    def test_experimento_intento_antes_de_la_llamada_y_procedencia_verdadera(self):
+        h = self._exp_crear()
+        doc = self._doc(4, ts=self.dentro)
+        visto = {}
+
+        def al_llamar(*_a, **_k):
+            with open(self.ruta_exp, encoding="utf-8") as f:
+                visto["eventos"] = [json.loads(l) for l in f if l.strip()]
+            return _resp_vertex(_salida_cvss())
+
+        r, url = self._exp_correr(doc, urlopen={"side_effect": al_llamar})
+        self.assertEqual((r["llamadas_reales"], url.call_count, r["estado_analisis"]), (1, 1, "COMPLETED"))
+        self.assertEqual([e["tipo"] for e in visto["eventos"]], ["inicio", "ejecucion", "intento"])   # antes de llamar
+        a = Alert.objects.get(opensearch_id=doc["opensearch_id"])
+        self.assertEqual(a.proveedor_ia, "vertex_tuned")                 # proveedor real, sin cambios
+        marca = a.contexto_ia_snapshot["_experimento"]
+        self.assertEqual(marca, {"clase": "prueba_controlada", "experimento": self.EXP, "intento": 1,
+                                 "alerta": piloto_mod.huella_opensearch_id(doc["opensearch_id"]),
+                                 "registro_cabecera_sha256": h})
+        with piloto_mod.RegistroPiloto(self.ruta_exp) as reg:
+            self.assertEqual(reg.usados, 1)
+            self.assertEqual(reg.intentos[0]["texto_sha256"],
+                             a.contexto_ia_snapshot["_entrada_modelo"]["texto_enviado_sha256"])
+        with open(self.ruta_exp, encoding="utf-8") as f:
+            self.assertEqual([json.loads(l)["tipo"] for l in f if l.strip()], ["inicio", "ejecucion", "intento", "resultado"])
+
+    def test_la_procedencia_no_cambia_el_texto_ni_la_huella(self):
+        from types import SimpleNamespace
+        from dashboard.dataset import construir_entrada, fingerprint_entrada
+        from dashboard.ia.entrada_exportacion import texto_usuario
+        self._exp_crear()
+        doc = self._doc(5, ts=self.dentro)
+        self._exp_correr(doc)
+        snap = Alert.objects.get(opensearch_id=doc["opensearch_id"]).contexto_ia_snapshot
+        sin = {k: v for k, v in snap.items() if k != "_experimento"}
+        con_t = texto_usuario(construir_entrada(SimpleNamespace(contexto_ia_snapshot=snap)))[0]
+        sin_t = texto_usuario(construir_entrada(SimpleNamespace(contexto_ia_snapshot=sin)))[0]
+        self.assertEqual(con_t, sin_t)
+        self.assertEqual(hashlib.sha256(con_t.encode("utf-8")).hexdigest(), snap["_entrada_modelo"]["texto_enviado_sha256"])
+        self.assertEqual(fingerprint_entrada(construir_entrada(SimpleNamespace(contexto_ia_snapshot=snap))),
+                         fingerprint_entrada(construir_entrada(SimpleNamespace(contexto_ia_snapshot=sin))))
+        self.assertNotIn(self.EXP, con_t)
+
+    def test_experimento_rechaza_sin_llamar(self):
+        self._exp_crear(tope=1)
+        casos = [
+            (self._doc(6, ts=self.fuera), "sesión"),
+            (self._doc(7, ts=self.dentro, rule="5710"), "no prevista"),
+            ({**self._doc(8, ts=self.dentro), "agent_id": "001"}, "otro agente"),
+        ]
+        for doc, texto in casos:
+            r, url = self._exp_correr(doc)
+            self.assertIsInstance(r, _CommandError, texto)
+            self.assertIn(texto, str(r))
+            self.assertEqual(url.call_count, 0)
+        r, url = self._exp_correr(self._doc(9, ts=self.dentro), tls=None)
+        self.assertIsInstance(r, _CommandError)
+        Alert.objects.create(opensearch_id="LOTE-VTX-10", titulo="x", descripcion="x")
+        r, url = self._exp_correr(self._doc(10, ts=self.dentro))
+        self.assertIn("ya presente", str(r))
+        r, url = self._exp_correr(self._doc(11, ts=self.dentro))         # agota el tope (1)
+        self.assertEqual(r["llamadas_reales"], 1)
+        r, url = self._exp_correr(self._doc(12, ts=self.dentro))
+        self.assertIn("tope total agotado", str(r))
+        self.assertEqual(url.call_count, 0)
+        self.assertEqual(Alert.objects.filter(proveedor_ia="vertex_tuned").count(), 1)
+
+    # -- coherencia del piloto natural --
+    def test_natural_continua_si_la_fila_esta_vinculada_y_sellada(self):
+        h, doc = self._escenario()
+        reserva = self._reserva(sesiones=[self._sesion(h)])
+        nuevo_en_sesion = self._doc(102, ts=self.dentro)
+        natural = self._doc(103, ts=self.fuera)
+        r, url, log = self._natural([doc, nuevo_en_sesion, natural], reserva)
+        self.assertNotIsInstance(r, _CommandError)
+        self.assertEqual((r["ya_existentes"], r["reservadas"], r["llamadas_reales"]), (1, 1, 1))
+        self.assertTrue(any("verificados contra la reserva sellada" in l for l in log))
+        self.assertEqual(self._usados(), 1)                               # solo el natural cuenta en su registro
+        with piloto_mod.RegistroPiloto(self.ruta_exp) as reg:
+            self.assertEqual(reg.usados, 1)
+
+    def test_natural_se_bloquea_si_falta_cualquier_vinculo(self):
+        h, doc = self._escenario()
+        otra_ruta = os.path.join(self.dir, "experimento2.jsonl")
+        h2 = self._exp_crear(ruta=otra_ruta)
+        variantes = {
+            "reserva sin sesión del experimento": self._reserva(nombre="r1.json"),
+            "otro experimento": self._reserva(sesiones=[self._sesion(h, experimento="OTRO-1")], nombre="r2.json"),
+            "sesión que no cubre la hora": self._reserva(sesiones=[self._sesion(
+                h, ini=self.fin + datetime.timedelta(hours=1), fin=self.fin + datetime.timedelta(hours=2))], nombre="r3.json"),
+            "otra cabecera (registro sustituido)": self._reserva(sesiones=[self._sesion(h2, ruta=otra_ruta)], nombre="r4.json"),
+            "cabecera sellada distinta": self._reserva(sesiones=[self._sesion("ee" * 32)], nombre="r5.json"),
+        }
+        for nombre, reserva in variantes.items():
+            r, url, _log = self._natural([], reserva, dry=True, conf=False)
+            self.assertIsInstance(r, _CommandError, nombre)
+            self.assertEqual(url.call_count, 0, nombre)
+
+    def test_una_marca_sola_no_excluye_ninguna_fila(self):
+        h, doc = self._escenario()
+        reserva = self._reserva(sesiones=[self._sesion(h)])
+        real = Alert.objects.get(opensearch_id=doc["opensearch_id"])
+        # Fila forjada: marca bien formada, en la sesión y con la cabecera correcta, pero sin intento previo.
+        snap = dict(real.contexto_ia_snapshot)
+        snap["_experimento"] = {**snap["_experimento"], "intento": 2,
+                                "alerta": piloto_mod.huella_opensearch_id("FORJADA-1")}
+        Alert.objects.create(opensearch_id="FORJADA-1", titulo="x", descripcion="x", wazuh_agent_id="000",
+                             proveedor_ia="vertex_tuned", timestamp=real.timestamp, contexto_ia_snapshot=snap)
+        r, url, _log = self._natural([], reserva, dry=True, conf=False)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("intento previo", str(r))
+        Alert.objects.filter(opensearch_id="FORJADA-1").delete()
+        # Texto distinto del anotado en el registro.
+        snap = dict(real.contexto_ia_snapshot)
+        snap["_entrada_modelo"] = {**snap["_entrada_modelo"], "texto_enviado_sha256": "ff" * 32}
+        Alert.objects.filter(pk=real.pk).update(contexto_ia_snapshot=snap)
+        r, url, _log = self._natural([], reserva, dry=True, conf=False)
+        self.assertIsInstance(r, _CommandError)
+        Alert.objects.filter(pk=real.pk).update(contexto_ia_snapshot=real.contexto_ia_snapshot)
+        # Fila del proveedor sin marca y sin intento natural: bloquea como siempre.
+        Alert.objects.create(opensearch_id="SIN-MARCA-1", titulo="x", descripcion="x", wazuh_agent_id="000",
+                             proveedor_ia="vertex_tuned", timestamp=real.timestamp, contexto_ia_snapshot={})
+        r, url, _log = self._natural([], reserva, dry=True, conf=False)
+        self.assertIn("incoherente", str(r))
+        Alert.objects.filter(opensearch_id="SIN-MARCA-1").delete()
+        r, url, _log = self._natural([], reserva, dry=True, conf=False)       # restaurado: continúa
+        self.assertNotIsInstance(r, _CommandError)
+
+    def test_fila_a_la_vez_natural_y_controlada_bloquea(self):
+        h, doc = self._escenario()
+        with open(self.ruta, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"tipo": "intento", "n": 1, "utc": "2026-10-12T00:00:00+00:00",
+                                "alerta": piloto_mod.huella_opensearch_id(doc["opensearch_id"])}) + "\n")
+        r, url, _log = self._natural([], self._reserva(sesiones=[self._sesion(h)]), dry=True, conf=False)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("a la vez", str(r))
+
+    def test_registro_del_experimento_inseguro_o_en_uso_bloquea(self):
+        h, doc = self._escenario()
+        reserva = self._reserva(sesiones=[self._sesion(h)])
+        os.chmod(self.ruta_exp, 0o644)
+        r, _url, _log = self._natural([], reserva, dry=True, conf=False)
+        self.assertIsInstance(r, _CommandError)
+        os.chmod(self.ruta_exp, 0o600)
+        with piloto_mod.RegistroPiloto(self.ruta_exp):                     # otra ejecución lo tiene abierto
+            r, _url, _log = self._natural([], reserva, dry=True, conf=False)
+        self.assertIn("en uso", str(r))
+
+    def test_reserva_con_vinculo_incompleto_se_rechaza_y_la_antigua_conserva_su_sello(self):
+        ses = {"agente": "000", "inicio_utc": self.ini.isoformat(), "fin_utc": self.fin.isoformat(), "experimento": self.EXP}
+        with self.assertRaises(piloto_mod.RegistroPilotoError):
+            self._reserva(sesiones=[ses], nombre="incompleta.json")
+        ruta, sello = self._manifiesto(episodios=[("000", ["2026-10-01"])], nombre="antigua.json")
+        self.assertEqual(piloto_mod.ManifiestoReserva(ruta, sello).sello, sello)
+
+    def test_linea_de_comandos_del_experimento(self):
+        out = StringIO()
+        call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", "--iniciar-experimento",
+                     "--registro-experimento", self.ruta_exp, "--experimento", self.EXP,
+                     "--sesion-experimento", f"{self.ini.isoformat()},{self.fin.isoformat()}",
+                     "--reglas-experimento", "5712", "--plan-sello", "cd" * 32, "--tope-total", "4", stdout=out)
+        with piloto_mod.RegistroPiloto(self.ruta_exp) as reg:
+            self.assertIn(reg.huella_cabecera, out.getvalue())
+            self.assertEqual((reg.tope_total, reg.es_experimento), (4, True))
+        ruta_r, sello_r = self._manifiesto(sesiones=[self._sesion(reg.huella_cabecera)], nombre="reserva_cli.json")
+        res = ["--reserva", ruta_r, "--reserva-sello", sello_r]
+        prohibidas = [
+            ["--experimento", self.EXP, "--dry-run"],                                  # solo con --iniciar-experimento
+            ["--registro-experimento", self.ruta_exp, "--dry-run", *res],              # sin --opensearch-id
+            ["--registro-experimento", self.ruta_exp, "--opensearch-id", "X", "--dry-run", "--piloto", *res],
+            ["--registro-experimento", self.ruta_exp, "--opensearch-id", "X", "--dry-run", *res],  # sin huella TLS
+            ["--registro-experimento", self.ruta_exp, "--opensearch-id", "X", "--dry-run",
+             "--wazuh-tls-sha256", "ab" * 32],                                           # sin reserva
+        ]
+        for extra in prohibidas:
+            with self.assertRaises(_CommandError, msg=str(extra)):
+                call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", *extra, stdout=StringIO())
+        doc = self._doc(201, ts=self.dentro)
+        out = StringIO()
+        with mock.patch("dashboard.management.commands.ingestar_alertas.get_alert_by_id", return_value=doc) as g, \
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen") as url:
+            call_command("ingestar_alertas", "--agent-id", "000", "--registro-experimento", self.ruta_exp,
+                         "--opensearch-id", doc["opensearch_id"], "--wazuh-tls-sha256", "ab" * 32, "--dry-run",
+                         *res, stdout=out)
+        self.assertEqual(g.call_args.kwargs.get("tls_huella"), "ab" * 32)               # lectura con la huella fijada
+        self.assertEqual((url.call_count, Alert.objects.count()), (0, 0))
+        self.assertIn("modo: dry-run", out.getvalue())
+
+
+from django.forms.models import model_to_dict  # noqa: E402
+from dashboard.ia.ingesta import BLOQUEADA_EXPERIMENTO, ingestar_alerta, ingestar_lote, reanalizar_alerta  # noqa: E402
+from dashboard.views import reclasificar_alertas_pendientes  # noqa: E402
+
+
+class PruebaControladaSinReintentosTests(_ExperimentoBase, TestCase):
+    """
+    Las alertas de una prueba controlada no admiten reintentos: ninguna acción ordinaria (reintento individual,
+    reclasificación por lote —vista y comando—, actualización desde Wazuh, ingesta por lotes, migración de legado)
+    llama al modelo ni modifica la fila; la procedencia se conserva y la coherencia natural sigue intacta.
+    Las alertas normales se reanalizan como siempre.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.h = self._exp_crear_con_natural()
+        self.doc = self._doc(301, ts=self.dentro)
+        r, url = self._exp_correr(self.doc, urlopen={"return_value": _resp_vertex(_salida_cvss(confidentiality_impact="ninguno"))})
+        self.assertEqual(url.call_count, 1)
+        self.exp = Alert.objects.get(opensearch_id=self.doc["opensearch_id"])
+        self.assertEqual(self.exp.estado_analisis, "ANALISIS_FALLIDO")         # reintentable para una alerta normal
+        self.foto = model_to_dict(self.exp)
+        self.reserva = self._reserva(sesiones=[self._sesion(self.h)])
+
+    def _exp_crear_con_natural(self):
+        self._crear(tope=3)
+        return self._exp_crear()
+
+    def _normal_fallida(self, i=401):
+        # Otro agente: reanalizar con vertex_tuned una alerta normal del agente del piloto natural la dejaría sin
+        # intento natural y bloquearía su coherencia (comportamiento vigente, ajeno a las pruebas controladas).
+        return Alert.objects.create(
+            opensearch_id=f"NORMAL-{i}", titulo="x", descripcion=f"sshd: brute force trying to get access (normal {i}).",
+            severidad=10, estado_analisis="ANALISIS_FALLIDO", wazuh_agent_id="001", wazuh_rule_id="5712",
+            wazuh_rule_groups=["syslog", "sshd", "authentication_failures"], activo_logico=self.srv,
+            timestamp=self.fuera)
+
+    def _intacta(self):
+        actual = model_to_dict(Alert.objects.get(pk=self.exp.pk))
+        self.assertEqual(actual, self.foto)
+        self.assertEqual(actual["contexto_ia_snapshot"]["_experimento"]["experimento"], self.EXP)
+
+    def _coherencia_natural_intacta(self):
+        r, url, log = self._natural([], self.reserva, dry=True, conf=False)
+        self.assertNotIsInstance(r, _CommandError)
+        self.assertTrue(any("verificados contra la reserva sellada" in l for l in log))
+
+    def _mocks(self):
+        return (mock.patch.dict(os.environ, {**_ENV_VERTEX, "IA_PROVIDER": "vertex_tuned"}),
+                mock.patch.object(proveedores.VertexTunedProvider, "_token", return_value=_TOKEN_FALSO),
+                mock.patch("dashboard.ia.proveedores.urllib.request.urlopen", return_value=_resp_vertex(_salida_cvss())))
+
+    def test_reanalizar_alerta_bloqueada_sin_llamar_ni_modificar(self):
+        a, b, c = self._mocks()
+        with a, b, c as url:
+            self.assertEqual(reanalizar_alerta(self.exp, proveedor="vertex_tuned"), BLOQUEADA_EXPERIMENTO)
+            self.assertEqual(reanalizar_alerta(self.exp, proveedor="vertex_tuned", alert_override=self.doc),
+                             BLOQUEADA_EXPERIMENTO)
+        self.assertEqual(url.call_count, 0)
+        self._intacta()
+        self._coherencia_natural_intacta()
+
+    def test_ingesta_individual_y_por_lote_no_tocan_la_fila(self):
+        a, b, c = self._mocks()
+        with a, b, c as url:
+            obj, accion = ingestar_alerta(self.doc, proveedor="vertex_tuned")
+            lote = ingestar_lote([self.doc], proveedor="vertex_tuned")
+        self.assertEqual((obj.pk, accion), (self.exp.pk, BLOQUEADA_EXPERIMENTO))
+        self.assertEqual((lote["bloqueadas_experimento"], lote["nuevas"], lote["recuperadas"]), (1, 0, 0))
+        self.assertEqual(url.call_count, 0)
+        self._intacta()
+
+    def test_reclasificacion_por_lote_excluye_la_prueba_y_procesa_las_normales(self):
+        normal = self._normal_fallida()
+        a, b, c = self._mocks()
+        with a, b, c as url:
+            r = reclasificar_alertas_pendientes(pausa_segundos=0, proveedor="vertex_tuned")
+        self.assertEqual((r["bloqueadas_experimento"], r["total"], r["analizadas"]), (1, 1, 1))
+        self.assertEqual(url.call_count, 1)                                   # solo la normal
+        normal.refresh_from_db()
+        self.assertEqual(normal.estado_analisis, "COMPLETED")
+        self._intacta()
+        self._coherencia_natural_intacta()
+
+    def test_vistas_y_comando_de_reintento_y_reclasificacion(self):
+        admin = User.objects.create_user("adm-exp", password="p")
+        admin.perfilusuario.rol = "ADMIN"; admin.perfilusuario.save()
+        self.client.force_login(admin)
+        a, b, c = self._mocks()
+        with a, b, c as url, mock.patch("dashboard.views.get_alert_by_id", return_value=None) as wazuh, \
+                mock.patch("dashboard.views.time.sleep") as pausa:
+            url_reintento = reverse("reintentar_analisis", args=[self.exp.pk])
+            for resp in (self.client.get(url_reintento), self.client.post(url_reintento)):
+                self.assertEqual(resp.status_code, 302)
+            self.assertEqual(self.client.post(reverse("reclasificar_pendientes")).status_code, 302)
+            out = StringIO()
+            call_command("reclasificar_pendientes", "--pausa", "0", stdout=out)
+            self.assertIn("prueba controlada", out.getvalue())
+            self.assertEqual((wazuh.call_count, url.call_count, pausa.call_count), (0, 0, 0))
+            # Una alerta normal en fallo sigue admitiendo el reintento individual.
+            normal = self._normal_fallida(402)
+            self.client.post(reverse("reintentar_analisis", args=[normal.pk]))
+            self.assertEqual((wazuh.call_count, url.call_count), (1, 1))
+        self._intacta()
+        self._coherencia_natural_intacta()
+
+    def test_ingesta_por_lotes_del_comando_no_toca_la_prueba(self):
+        log = []
+        r, _tok, url, _leido = self._correr([self.doc], log=log.append)     # modo lotes (sin piloto), confirmar
+        self.assertEqual((r["bloqueadas_experimento"], r["llamadas_reales"], url.call_count), (1, 0, 0))
+        self._intacta()
+
+    def test_migracion_de_legado_no_toca_la_prueba(self):
+        from dashboard.management.commands.migrar_legado import GATE_ENV_VAR, procesar_migracion_legado
+        Alert.objects.filter(pk=self.exp.pk).update(estado_analisis=None)    # caso límite: nunca debería ocurrir
+        foto = model_to_dict(Alert.objects.get(pk=self.exp.pk))
+        get_uno = mock.Mock()
+        with mock.patch.dict(os.environ, {GATE_ENV_VAR: "1"}), \
+                mock.patch("dashboard.ia.legado._buscar_documentos", return_value={}):
+            r = procesar_migracion_legado(scan_limit=10, max_analisis=0, dry=False, conf=True, get_uno=get_uno,
+                                          opensearch_id=self.doc["opensearch_id"])
+        self.assertEqual((r["bloqueadas_experimento"], get_uno.call_count), (1, 0))
+        self.assertEqual(model_to_dict(Alert.objects.get(pk=self.exp.pk)), foto)
+
+    def test_fallo_antes_del_analisis_conserva_la_procedencia(self):
+        doc = self._doc(302, ts=self.dentro)
+        with mock.patch("dashboard.ia.ingesta.analizar_alerta", side_effect=RuntimeError("fallo simulado")):
+            r, url = self._exp_correr(doc)
+        self.assertEqual(url.call_count, 0)
+        fila = Alert.objects.get(opensearch_id=doc["opensearch_id"])
+        self.assertEqual((fila.estado_analisis, fila.proveedor_ia), ("ANALISIS_FALLIDO", None))
+        self.assertEqual(fila.contexto_ia_snapshot["_experimento"]["intento"], 2)
+        a, b, c = self._mocks()
+        with a, b, c as url:
+            self.assertEqual(reanalizar_alerta(fila, proveedor="vertex_tuned"), BLOQUEADA_EXPERIMENTO)
+            r = reclasificar_alertas_pendientes(pausa_segundos=0, proveedor="vertex_tuned")
+        self.assertEqual((r["bloqueadas_experimento"], url.call_count), (2, 0))
+        self._coherencia_natural_intacta()          # sin proveedor ni intento: no afecta a la coherencia natural
+
+
+class PruebaControladaVinculoYHoraTests(_ExperimentoBase, TestCase):
+    """
+    El experimento exige, antes de leer Wazuh, escribir o pedir token, la reserva SELLADA que lo vincula (agente,
+    experimento, ruta y cabecera exacta del registro, y una sesión que figure en su cabecera). Admisión, selección
+    natural y justificación usan una única hora: la de recepción en Wazuh (`piloto.momento_de_reserva`); la hora
+    original de Windows solo cambia la entrada del modelo (horario y ventana).
+    """
+
+    def _doc_windows(self, i, *, recepcion, original):
+        return {"opensearch_id": f"WIN-{i}", "agent_id": "000", "level": 8, "rule_id": "60110",
+                "description": "User account changed", "groups": "windows,windows_security,account_changed",
+                "timestamp": recepcion.strftime("%Y-%m-%dT%H:%M:%S.000+0000"), "decoder_name": "windows_eventchannel",
+                "win": {"event_id": "4738", "channel": "Security", "proveedor": "Microsoft-Windows-Security-Auditing",
+                        "system_time": original.strftime("%Y-%m-%dT%H:%M:%S.0000000Z"),
+                        "target_sid": "S-1-5-21-1-2-3-1001", "subject_sid": "S-1-5-18", "member_sid": None,
+                        "target_es_equipo": False, "atributos_informados": ["displayName"],
+                        "formato_atributos": "delta", "uac_anterior": None, "uac_nuevo": None}}
+
+    def _sin_efectos(self, r, url, wazuh, antes, nombre):
+        self.assertIsInstance(r, _CommandError, nombre)
+        self.assertEqual((wazuh.call_count, self.tokens_pedidos, url.call_count, Alert.objects.count()), (0, 0, 0, 0), nombre)
+        self.assertEqual(open(self.ruta_exp, "rb").read(), antes, nombre)
+
+    def test_sin_vinculo_sellado_no_lee_no_escribe_no_pide_token_ni_llama(self):
+        h = self._exp_crear()
+        otra = os.path.join(self.dir, "otro_registro.jsonl")
+        h_otra = self._exp_crear(ruta=otra)                                    # mismo experimento, otro registro
+        variantes = {
+            "reserva ausente": None,
+            "reserva sin sesión del experimento": self._reserva(nombre="v1.json"),
+            "otro experimento": self._reserva(sesiones=[self._sesion(h, experimento="OTRO-1")], nombre="v2.json"),
+            "otro agente": self._reserva(sesiones=[{**self._sesion(h), "agente": "001"}], nombre="v3.json"),
+            "otro registro": self._reserva(sesiones=[self._sesion(h_otra, ruta=otra)], nombre="v4.json"),
+            "cabecera distinta": self._reserva(sesiones=[self._sesion("ee" * 32)], nombre="v5.json"),
+            "sesión ajena a la cabecera": self._reserva(sesiones=[self._sesion(
+                h, ini=self.ini - datetime.timedelta(hours=1))], nombre="v6.json"),
+        }
+        antes = open(self.ruta_exp, "rb").read()
+        doc = self._doc(501, ts=self.dentro)
+        for nombre, reserva in variantes.items():
+            for dry in (True, False):
+                wazuh = mock.Mock(return_value=doc)
+                r, url = self._exp_correr(doc, dry=dry, reserva=reserva, get_uno=wazuh)
+                self._sin_efectos(r, url, wazuh, antes, f"{nombre} (dry={dry})")
+
+    def test_cli_sello_incorrecto_o_sin_reserva_no_hace_nada(self):
+        h = self._exp_crear()
+        ruta_r, sello_r = self._manifiesto(sesiones=[self._sesion(h)], nombre="reserva_cli2.json")
+        antes = open(self.ruta_exp, "rb").read()
+        base = ["ingestar_alertas", "--agent-id", "000", "--registro-experimento", self.ruta_exp, "--opensearch-id",
+                "LOTE-VTX-502", "--wazuh-tls-sha256", "ab" * 32, "--confirmar"]
+        for extra in (["--reserva", ruta_r, "--reserva-sello", "0" * 64],      # sello incorrecto
+                      ["--reserva", ruta_r],                                    # sin sello
+                      []):                                                      # sin reserva
+            with mock.patch("dashboard.management.commands.ingestar_alertas.get_alert_by_id") as wazuh, \
+                    mock.patch.object(proveedores.VertexTunedProvider, "_token") as tok, \
+                    mock.patch("dashboard.ia.proveedores.urllib.request.urlopen") as url:
+                with self.assertRaises(_CommandError, msg=str(extra)):
+                    call_command(*base, *extra, stdout=StringIO())
+            self.assertEqual((wazuh.call_count, tok.call_count, url.call_count, Alert.objects.count()), (0, 0, 0, 0))
+            self.assertEqual(open(self.ruta_exp, "rb").read(), antes)
+
+    def test_hora_unica_windows_original_dentro_recepcion_fuera(self):
+        """Evento de Windows ocurrido dentro de la sesión pero recibido después de su fin: no se admite y, coherente
+        con ello, el piloto natural no lo trata como reservado (cuenta la hora de recepción en ambos)."""
+        self._crear(tope=3)
+        h = self._exp_crear(reglas=("60110",))
+        doc = self._doc_windows(1, recepcion=self.fin + datetime.timedelta(minutes=10),
+                                original=self.fin - datetime.timedelta(minutes=5))
+        self.assertGreater(piloto_mod.momento_de_reserva(doc["timestamp"]), self.fin)
+        antes = open(self.ruta_exp, "rb").read()
+        wazuh = mock.Mock(return_value=doc)
+        r, url = self._exp_correr(doc, get_uno=wazuh)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("recepción", str(r))
+        self.assertEqual((url.call_count, self.tokens_pedidos, Alert.objects.count()), (0, 0, 0))
+        self.assertEqual(open(self.ruta_exp, "rb").read(), antes)
+        reserva = self._reserva(sesiones=[self._sesion(h)])
+        self.assertFalse(reserva.reservada("000", doc["timestamp"]))
+        c, _url, _log = self._natural([doc], reserva, dry=True, conf=False)
+        self.assertEqual((c["reservadas"], c["elegibles"]), (0, 1))
+
+    def test_hora_unica_windows_original_fuera_recepcion_dentro(self):
+        """Evento de Windows ocurrido antes de la sesión y recibido dentro: se admite, la fila guarda esa misma hora de
+        recepción y la justificación posterior la acepta; la entrada del modelo sigue usando la hora original."""
+        self._crear(tope=3)
+        h = self._exp_crear(reglas=("60110",))
+        recepcion = self.ini + datetime.timedelta(minutes=10)
+        original = self.ini - datetime.timedelta(minutes=3)
+        doc = self._doc_windows(2, recepcion=recepcion, original=original)
+        r, url = self._exp_correr(doc)
+        self.assertEqual((r["llamadas_reales"], url.call_count, r["estado_analisis"]), (1, 1, "COMPLETED"))
+        fila = Alert.objects.get(opensearch_id=doc["opensearch_id"])
+        self.assertEqual(piloto_mod.momento_de_reserva(fila.timestamp), piloto_mod.momento_de_reserva(doc["timestamp"]))
+        tiempo = fila.contexto_ia_snapshot["_diagnostico_tiempo"]
+        self.assertEqual(tiempo["fuente"], "hora_original_windows")
+        self.assertEqual(datetime.datetime.fromisoformat(tiempo["hora_evento_utc"]), original)
+        reserva = self._reserva(sesiones=[self._sesion(h)])
+        self.assertEqual(piloto_mod.justificar_fila_experimento(
+            reserva, agente="000", proveedor="vertex_tuned", opensearch_id=doc["opensearch_id"], momento=fila.timestamp,
+            snapshot=fila.contexto_ia_snapshot, huellas_naturales=set()), self.EXP)
+        otro = self._doc_windows(3, recepcion=recepcion + datetime.timedelta(minutes=1), original=original)
+        c, _url, log = self._natural([doc, otro], reserva, dry=True, conf=False)
+        self.assertEqual((c["ya_existentes"], c["reservadas"]), (1, 1))
+        self.assertTrue(any("verificados contra la reserva sellada" in l for l in log))
+
+
+class PruebaControladaReservaAmbiguaTests(_ExperimentoBase, TestCase):
+    """
+    Un único criterio de ambigüedad (`piloto.sesiones_ambiguas`, aplicado al cargar la reserva): dos sesiones del
+    mismo agente y experimento que se solapan o se tocan y apuntan a registros o cabeceras distintos invalidan la
+    reserva. La validación previa del experimento y la justificación posterior no pueden discrepar; las sesiones
+    válidas siguen funcionando.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.ruta_b = os.path.join(self.dir, "experimento_b.jsonl")
+
+    def _manifiesto_dos(self, sesion_a, sesion_b, nombre):
+        return self._manifiesto(sesiones=[sesion_a, sesion_b], nombre=nombre)
+
+    def test_solapadas_con_registros_distintos_cero_efectos(self):
+        self._crear(tope=3)
+        h_a = self._exp_crear()
+        h_b = self._exp_crear(ruta=self.ruta_b)                              # mismo experimento y sesión, otro registro
+        casos = {
+            "solapadas": (self._sesion(h_a), self._sesion(h_b, ruta=self.ruta_b,
+                                                          ini=self.ini + datetime.timedelta(minutes=30))),
+            "idénticas": (self._sesion(h_a), self._sesion(h_b, ruta=self.ruta_b)),
+            "contiguas (límite compartido)": (self._sesion(h_a), self._sesion(
+                h_b, ruta=self.ruta_b, ini=self.fin, fin=self.fin + datetime.timedelta(hours=1))),
+        }
+        antes = {r: open(r, "rb").read() for r in (self.ruta_exp, self.ruta_b, self.ruta)}
+        for nombre, (sa, sb) in casos.items():
+            ruta_r, sello_r = self._manifiesto_dos(sa, sb, f"ambigua_{len(nombre)}.json")
+            with self.assertRaises(piloto_mod.RegistroPilotoError, msg=nombre) as cm:
+                piloto_mod.ManifiestoReserva(ruta_r, sello_r)
+            self.assertIn("ambigua", str(cm.exception))
+            for registro in (self.ruta_exp, self.ruta_b):                    # con cualquiera de los dos registros
+                with mock.patch("dashboard.management.commands.ingestar_alertas.get_alert_by_id",
+                                return_value=self._doc(601, ts=self.dentro)) as wazuh, \
+                        mock.patch.dict(os.environ, _ENV_VERTEX), \
+                        mock.patch.object(proveedores.VertexTunedProvider, "_token") as tok, \
+                        mock.patch("dashboard.ia.proveedores.urllib.request.urlopen") as url:
+                    with self.assertRaises(_CommandError, msg=f"{nombre} / {registro}") as cm:
+                        call_command("ingestar_alertas", "--agent-id", "000", "--registro-experimento", registro,
+                                     "--opensearch-id", "LOTE-VTX-601", "--wazuh-tls-sha256", "ab" * 32,
+                                     "--reserva", ruta_r, "--reserva-sello", sello_r, "--confirmar", stdout=StringIO())
+                self.assertIn("ambigua", str(cm.exception))
+                self.assertEqual((wazuh.call_count, tok.call_count, url.call_count, Alert.objects.count()), (0, 0, 0, 0))
+            for r, contenido in antes.items():
+                self.assertEqual(open(r, "rb").read(), contenido, f"{nombre}: {r}")
+            # El piloto natural tampoco acepta esa reserva (mismo criterio, misma carga).
+            with self.assertRaises(_CommandError):
+                call_command("ingestar_alertas", "--agent-id", "000", "--proveedor", "vertex_tuned", "--dry-run",
+                             "--piloto", "--registro-piloto", self.ruta, "--reserva", ruta_r, "--reserva-sello", sello_r,
+                             "--wazuh-tls-sha256", "ab" * 32, stdout=StringIO())
+
+    def test_defensa_en_profundidad_si_la_reserva_no_pasara_por_la_carga(self):
+        """Aunque una reserva ambigua llegara ya construida, validación previa y justificación la rechazan igual."""
+        self._crear(tope=3)
+        h_a = self._exp_crear()
+        h_b = self._exp_crear(ruta=self.ruta_b)
+        reserva = self._reserva(sesiones=[self._sesion(h_a)], nombre="base.json")
+        reserva._sesiones_experimento.append(("000", self.ini, self.fin, self.EXP, self.ruta_b, h_b))   # forzada
+        antes = open(self.ruta_exp, "rb").read()
+        wazuh = mock.Mock(return_value=self._doc(602, ts=self.dentro))
+        r, url = self._exp_correr(self._doc(602, ts=self.dentro), reserva=reserva, get_uno=wazuh)
+        self.assertIsInstance(r, _CommandError)
+        self.assertIn("ambigua", str(r).lower())
+        self.assertEqual((wazuh.call_count, self.tokens_pedidos, url.call_count, Alert.objects.count()), (0, 0, 0, 0))
+        self.assertEqual(open(self.ruta_exp, "rb").read(), antes)
+        with self.assertRaises(piloto_mod.RegistroPilotoError) as cm:
+            piloto_mod.justificar_fila_experimento(
+                reserva, agente="000", proveedor="vertex_tuned", opensearch_id="X", momento=self.dentro,
+                snapshot={"_experimento": {"clase": "prueba_controlada", "experimento": self.EXP,
+                                           "alerta": piloto_mod.huella_opensearch_id("X")}},
+                huellas_naturales=set())
+        self.assertIn("ambigua", str(cm.exception))
+
+    def test_sesiones_validas_siguen_funcionando(self):
+        """Dos registros del mismo experimento en sesiones separadas, y un registro con dos sesiones solapadas."""
+        self._crear(tope=3)
+        ini_b, fin_b = self.fin + datetime.timedelta(hours=1), self.fin + datetime.timedelta(hours=3)
+        h_a = self._exp_crear(sesiones=[(self.ini, self.fin), (self.ini + datetime.timedelta(minutes=30), self.fin)])
+        h_b = self._exp_crear(ruta=self.ruta_b, sesiones=[(ini_b, fin_b)])
+        reserva = self._reserva(sesiones=[
+            self._sesion(h_a), self._sesion(h_a, ini=self.ini + datetime.timedelta(minutes=30)),   # mismo registro
+            self._sesion(h_b, ruta=self.ruta_b, ini=ini_b, fin=fin_b)], nombre="valida.json")
+        doc_a = self._doc(603, ts=self.dentro)
+        r, url = self._exp_correr(doc_a, reserva=reserva)
+        self.assertEqual((r["llamadas_reales"], url.call_count), (1, 1))
+        # Una alerta de la sesión de B no se admite con el registro de A (y viceversa): criterio coherente.
+        doc_b_en_a = self._doc(604, ts=(ini_b + datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        r, url = self._exp_correr(doc_b_en_a, reserva=reserva)
+        self.assertIsInstance(r, _CommandError)
+        self.assertEqual(url.call_count, 0)
+        doc_b = self._doc(605, ts=(ini_b + datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        r, url = self._exp_correr(doc_b, ruta=self.ruta_b, reserva=reserva)
+        self.assertEqual((r["llamadas_reales"], url.call_count), (1, 1))
+        c, _url, log = self._natural([], reserva, dry=True, conf=False)
+        self.assertNotIsInstance(c, _CommandError)
+        self.assertTrue(any("verificados contra la reserva sellada" in l and "2 análisis" in l for l in log))

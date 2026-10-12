@@ -41,17 +41,17 @@ Piloto acotado (registro persistente, ver dashboard/ia/piloto.py):
     o ya apareció en esta ejecución, la alerta no se envía ni consume intento
     (con --confirmar queda un evento `duplicada` en el registro).
 """
-import datetime
 import hashlib
 import os
 import re
+from collections import Counter
 
 from django.core.management.base import BaseCommand, CommandError
 
 from dashboard.ia import piloto as piloto_mod
 from dashboard.ia import proveedores
-from dashboard.ia.ingesta import ingestar_alerta
-from dashboard.ia.prompt import _parsear_ts, construir_entrada_e, construir_prompt
+from dashboard.ia.ingesta import es_prueba_controlada, ingestar_alerta
+from dashboard.ia.prompt import construir_entrada_e, construir_prompt
 from dashboard.ia.politica import cargar_politica, evaluar_elegibilidad
 from dashboard.ia.resolver import resolver_activo_por_agente
 from dashboard.models import Alert
@@ -235,15 +235,33 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
         if not tls_huella:
             raise CommandError("El piloto exige verificar TLS del indexador (--wazuh-tls-sha256): "
                                "no se envían credenciales a Wazuh sin verificación.")
+        if registro.es_experimento:
+            raise CommandError("El registro es de una prueba controlada: no vale como piloto natural. Abortado.")
         if registro.agente != agent_id or registro.proveedor != proveedor:
             raise CommandError("El registro del piloto es de otro agente o de otro proveedor. Abortado.")
-        analizadas = Alert.objects.filter(
+        filas = Alert.objects.filter(
             wazuh_agent_id=agent_id, proveedor_ia=proveedor, creado_en__gte=registro.inicio_utc,
-        ).exclude(opensearch_id__isnull=True).exclude(opensearch_id="").values_list("opensearch_id", flat=True)
+        ).exclude(opensearch_id__isnull=True).exclude(opensearch_id="").values_list(
+            "opensearch_id", "timestamp", "contexto_ia_snapshot")
+        # Una fila con procedencia de prueba controlada solo sale de la contabilidad natural si
+        # `justificar_fila_experimento` la vincula con la reserva sellada, su registro y su intento previo.
+        # Si no, el piloto no continúa (la marca sola no basta). Toda otra fila exige un intento natural.
+        naturales, controladas = [], Counter()
+        huellas_naturales = registro.huellas_intentadas()
         try:
-            registro.comprobar_coherencia(list(analizadas))
+            for osid, ts, snap in filas:
+                if isinstance(snap, dict) and "_experimento" in snap:
+                    controladas[piloto_mod.justificar_fila_experimento(
+                        reserva, agente=agent_id, proveedor=proveedor, opensearch_id=osid, momento=ts,
+                        snapshot=snap, huellas_naturales=huellas_naturales)] += 1
+                else:
+                    naturales.append(osid)
+            registro.comprobar_coherencia(naturales)
         except piloto_mod.RegistroPilotoError as e:
             raise CommandError(f"Piloto: {e}. Abortado.")
+        for exp, n in sorted(controladas.items()):
+            log(f"Coherencia: {n} análisis de la prueba controlada {exp} verificados contra la reserva sellada, "
+                f"su registro y su intento previo; no cuentan como intentos naturales.")
         if conf and registro.restantes <= 0:
             raise CommandError("Piloto: tope total agotado. No se llama al modelo.")
         max_analisis = min(max_analisis, registro.restantes)
@@ -287,7 +305,7 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
              procedencia_completada=0, completed=0, analisis_fallido=0,
              falso_positivo=0, requiere_atencion=0,
              no_representables=0, ya_existentes=0, anteriores_al_piloto=0, reservadas=0, texto_duplicado=0,
-             seleccion=[])
+             bloqueadas_experimento=0, seleccion=[])
 
     for raw in crudas:
         c['candidatas'] += 1
@@ -300,15 +318,16 @@ def procesar_ingesta_controlada(agent_id, *, scan_limit, max_analisis, dry, conf
             if not osid or existente is not None:
                 c['ya_existentes'] += 1
                 continue
-            momento = _parsear_ts(raw.get('timestamp'))
-            if momento is not None and momento.tzinfo is None:
-                momento = momento.replace(tzinfo=datetime.timezone.utc)
+            momento = piloto_mod.momento_de_reserva(raw.get('timestamp'))     # hora única de reservas y sesiones
             if reserva.reservada(agent_id, momento):      # exclusión EXPLÍCITA (sin fecha también se excluye)
                 c['reservadas'] += 1
                 continue
             if momento < registro.inicio_utc:
                 c['anteriores_al_piloto'] += 1
                 continue
+        elif existente is not None and es_prueba_controlada(existente):
+            c['bloqueadas_experimento'] += 1        # prueba controlada: sin reintentos (ni llamada ni escritura)
+            continue
         elif existente is not None and existente.estado_analisis == 'COMPLETED':
             c['duplicadas_completed'] += 1
             continue
@@ -499,6 +518,128 @@ def procesar_una_por_opensearch_id(opensearch_id, agent_id, *,
     )
 
 
+def _vinculo_experimento(reserva, registro, agent_id):
+    """
+    Sesiones [(inicio, fin)] con las que la reserva SELLADA vincula este registro: mismo agente y experimento, la
+    misma ruta (real) y la cabecera exacta, y una sesión que figure también en la cabecera del registro. Es lo
+    mismo que exigirá después `justificar_fila_experimento`. Sin vínculo -> CommandError (nada se ha leído ni escrito).
+    """
+    if reserva is None:
+        raise CommandError("El experimento exige la reserva sellada del piloto natural (--reserva y --reserva-sello).")
+    declaradas = reserva.sesiones_vinculadas(agent_id, registro.experimento)
+    if not declaradas:
+        raise CommandError("La reserva sellada no declara este experimento para este agente. Abortado.")
+    # La reserva ya rechaza al cargarse las sesiones ambiguas (`piloto.sesiones_ambiguas`): el mismo criterio que
+    # verá `justificar_fila_experimento`, así que una sesión de este registro nunca se solapa con la de otro.
+    if piloto_mod.sesiones_ambiguas([("", i, f, "", ruta, sha) for i, f, ruta, sha in declaradas]):
+        raise CommandError("Reserva ambigua: sesiones solapadas del experimento apuntan a registros distintos. Abortado.")
+    destino = piloto_mod._destino_vinculo(registro.ruta, registro.huella_cabecera)
+    propias = [(i, f) for i, f, ruta, sha in declaradas if piloto_mod._destino_vinculo(ruta, sha) == destino]
+    if not propias:
+        raise CommandError("La reserva sellada no vincula este registro (ruta o cabecera distintas). Abortado.")
+    cabecera = set(registro.sesiones())
+    if any(s not in cabecera for s in propias):
+        raise CommandError("Una sesión sellada en la reserva no figura en la cabecera del experimento. Abortado.")
+    return propias
+
+
+def procesar_experimento_por_opensearch_id(opensearch_id, agent_id, *, registro, reserva, tls_huella, dry, conf,
+                                           get_uno=None, obtener_proveedor=proveedores.obtener_proveedor,
+                                           log=lambda _s: None):
+    """
+    Análisis DIRIGIDO de UNA alerta de una PRUEBA CONTROLADA, contado en el registro del experimento.
+    Antes de leer Wazuh exige el VÍNCULO con la reserva sellada del piloto natural (`_vinculo_experimento`). Antes de
+    llamar (y en --dry-run, sin llamar ni escribir) exige además: registro de clase prueba_controlada del mismo
+    agente; el documento exacto de ese agente leído con la huella TLS fijada; hora de recepción
+    (`piloto.momento_de_reserva`) dentro de una sesión VINCULADA; que no exista en MySQL ni tenga ya un
+    intento; elegible por política; regla prevista; entrada representable;
+    texto no intentado; tope disponible. En --confirmar anota la ejecución, prepara la alerta, registra el intento
+    (con el SHA del texto) JUSTO ANTES de la única llamada y el resultado después. La fila guarda `_experimento` con
+    el experimento, el número de intento, la huella de la alerta y la huella de la cabecera del registro.
+    """
+    opensearch_id = str(opensearch_id or "").strip()
+    agent_id = str(agent_id or "").strip()
+    if not opensearch_id or not agent_id:
+        raise CommandError("--opensearch-id y --agent-id son obligatorios.")
+    if not registro.es_experimento:
+        raise CommandError("El registro no es de una prueba controlada. Abortado.")
+    proveedor = registro.proveedor
+    if registro.agente != agent_id or proveedor not in PROVEEDORES_DIRIGIDOS:
+        raise CommandError("El registro del experimento es de otro agente o de un proveedor no admitido. Abortado.")
+    if not tls_huella:
+        raise CommandError("El experimento exige --wazuh-tls-sha256: no se envían credenciales sin verificar TLS.")
+    vinculadas = _vinculo_experimento(reserva, registro, agent_id)      # antes de leer, escribir o pedir token
+    activo = resolver_activo_por_agente(agent_id)
+    if activo is None:
+        raise CommandError(f"El agente {agent_id} no tiene asignación activa a un ActivoLogico. Abortado.")
+    if Alert.objects.filter(opensearch_id=opensearch_id).exists():
+        raise CommandError("opensearch_id ya presente en MySQL: el experimento no reingiere. Abortado.")
+    if piloto_mod.huella_opensearch_id(opensearch_id) in registro.huellas_intentadas():
+        raise CommandError("Esa alerta ya tiene un intento en el registro del experimento. Abortado.")
+    if conf and registro.restantes <= 0:
+        raise CommandError("Experimento: tope total agotado. No se llama al modelo.")
+
+    get_uno = get_uno or (lambda _id: get_alert_by_id(_id, agent_id, tls_huella=tls_huella))
+    try:
+        raw = get_uno(opensearch_id)
+    except Exception as exc:
+        raise CommandError(f"No se pudo consultar el indexador Wazuh: {_motivo_indexador(exc)}")
+    if raw is None:
+        raise CommandError("El documento solicitado no existe en Wazuh. Abortado.")
+    if str(raw.get("opensearch_id") or "") != opensearch_id or str(raw.get("agent_id") or "").strip() != agent_id:
+        raise CommandError("El indexador devolvió otro documento u otro agente. Abortado.")
+
+    politica = cargar_politica()
+    decision = evaluar_elegibilidad(raw, tiene_activo=True, politica=politica)
+    if not decision.elegible:
+        raise CommandError(f"Política: documento NO elegible ({decision.motivo_omision}). No se llama al modelo.")
+    regla = str(raw.get("rule_id") or "")
+    if regla not in registro.reglas:
+        raise CommandError(f"Regla {regla} no prevista en el experimento. Abortado.")
+    momento = piloto_mod.momento_de_reserva(raw.get("timestamp"))      # misma hora que al justificar la fila
+    if momento is None or not any(i <= momento <= f for i, f in vinculadas):
+        raise CommandError("La alerta no cae (por su hora de recepción) en una sesión vinculada del experimento. Abortado.")
+    exige_representable = getattr(proveedores.PROVEEDORES.get(proveedor), "formato_entrada", None) == "exp-entrada-1"
+    texto = _texto_exp_entrada(raw, activo) if exige_representable else construir_prompt(construir_entrada_e(raw, activo))
+    if texto is None:
+        raise CommandError("La alerta no es representable en exp-entrada-1. Abortado.")
+    texto_sha = hashlib.sha256(texto.encode("utf-8")).hexdigest()
+    if texto_sha in registro.textos_intentados():
+        raise CommandError("Ese texto ya tiene un intento en el experimento. Abortado.")
+    log(f"Experimento {registro.experimento}: regla {regla} nivel {raw.get('level')} "
+        f"{str(raw.get('timestamp') or '')[:19]} texto {texto_sha[:12]} | intentos {registro.usados}/{registro.tope_total}.")
+    r = dict(experimento=registro.experimento, regla=regla, texto=texto_sha[:12], llamadas_reales=0, alert_id=None,
+             estado_analisis="", veredicto_ia="", riesgo_ia="", modo="dry-run" if dry else "confirmar",
+             usados=registro.usados, tope_total=registro.tope_total)
+    if dry:
+        return r
+
+    inner = obtener_proveedor(proveedor)
+    if inner is None:
+        raise CommandError(f"Proveedor {proveedor} no disponible.")
+    err = inner.comprobar_credenciales(con_red=True) if hasattr(inner, "comprobar_credenciales") else None
+    if err:
+        raise CommandError(f"{proveedor} no utilizable: {err}. No se llama al modelo.")
+    registro.registrar_ejecucion_experimento(opensearch_id, modo="confirmar")
+    procedencia = {"clase": piloto_mod.CLASE_PRUEBA_CONTROLADA, "experimento": registro.experimento,
+                   "intento": registro.usados + 1, "alerta": piloto_mod.huella_opensearch_id(opensearch_id),
+                   "registro_cabecera_sha256": registro.huella_cabecera}
+    registro.preparar(opensearch_id, texto_sha256=texto_sha)
+    prov = _ProveedorContado(inner, tope=1, agent_id=agent_id, antes_de_llamar=registro.registrar_intento)
+
+    def _resolver(alert):
+        if str(alert.get('agent_id') or '').strip() != agent_id or str(alert.get('opensearch_id') or '') != opensearch_id:
+            return None
+        return resolver_activo_por_agente(agent_id)
+
+    obj, _accion = ingestar_alerta(raw, resolver=_resolver, politica=politica, proveedor=prov, procedencia=procedencia)
+    obj.refresh_from_db()
+    registro.registrar_resultado(opensearch_id, alert_id=obj.id, estado_analisis=obj.estado_analisis)
+    r.update(llamadas_reales=prov.llamadas, alert_id=obj.id, estado_analisis=obj.estado_analisis,
+             veredicto_ia=obj.veredicto_ia or "", riesgo_ia=obj.riesgo_ia or "", usados=registro.usados)
+    return r
+
+
 class Command(BaseCommand):
     help = "Ingesta controlada de alertas reales de un único agente (Sprint 2E / 2E.1 / 2G.3)."
 
@@ -533,11 +674,78 @@ class Command(BaseCommand):
                                  "entonces se envían credenciales, si coincide. Obligatorio con --piloto.")
         parser.add_argument('--tope-total', dest='tope_total', type=int, default=piloto_mod.TOPE_TOTAL_MAX,
                             help=f"solo con --iniciar-piloto: intentos totales del piloto (máx {piloto_mod.TOPE_TOTAL_MAX}).")
+        parser.add_argument('--registro-experimento', dest='registro_experimento', default=None,
+                            help="prueba controlada: ruta ABSOLUTA de su registro (600). Con --opensearch-id analiza "
+                                 "UNA alerta contada en ese registro; con --iniciar-experimento lo crea.")
+        parser.add_argument('--iniciar-experimento', action='store_true',
+                            help="crea el registro de una prueba controlada y termina (sin Wazuh ni modelo).")
+        parser.add_argument('--experimento', dest='experimento', default=None,
+                            help="con --iniciar-experimento: identificador del experimento.")
+        parser.add_argument('--sesion-experimento', dest='sesiones_experimento', action='append', default=[],
+                            help="con --iniciar-experimento: INICIO,FIN en ISO UTC con zona (repetible).")
+        parser.add_argument('--reglas-experimento', dest='reglas_experimento', default=None,
+                            help="con --iniciar-experimento: rule.id previstos separados por comas.")
+        parser.add_argument('--plan-sello', dest='plan_sello', default=None,
+                            help="con --iniciar-experimento: SHA-256 del plan sellado.")
         parser.add_argument('--dry-run', action='store_true')
         parser.add_argument('--confirmar', action='store_true')
 
     def handle(self, *args, **o):
         dry, conf = bool(o['dry_run']), bool(o['confirmar'])
+        opciones_piloto = o['piloto'] or o['iniciar_piloto'] or o['registro_piloto'] or o['reserva'] or o['reserva_sello']
+        opciones_exp = o['experimento'] or o['sesiones_experimento'] or o['reglas_experimento'] or o['plan_sello']
+
+        if o['iniciar_experimento']:
+            if dry or conf or opciones_piloto or o['opensearch_id'] or not o['registro_experimento']:
+                raise CommandError("--iniciar-experimento exige --registro-experimento y no admite --opensearch-id, "
+                                   "las opciones del piloto, --dry-run ni --confirmar.")
+            if resolver_activo_por_agente(str(o['agent_id']).strip()) is None:
+                raise CommandError(f"El agente {o['agent_id']} no tiene una asignación activa a un ActivoLogico.")
+            try:
+                sesiones = [tuple(x.split(",", 1)) for x in o['sesiones_experimento']]
+                cab = piloto_mod.crear_experimento(
+                    o['registro_experimento'], agente=str(o['agent_id']).strip(), proveedor=o['proveedor'],
+                    tope_total=o['tope_total'], experimento=o['experimento'], sesiones=sesiones,
+                    reglas=(o['reglas_experimento'] or "").split(","), plan_sello=o['plan_sello'])
+                with piloto_mod.RegistroPiloto(o['registro_experimento']) as reg:
+                    huella_cab = reg.huella_cabecera
+            except (piloto_mod.RegistroPilotoError, ValueError) as e:
+                raise CommandError(f"Experimento: {e}.")
+            self.stdout.write(self.style.SUCCESS(
+                f"Registro del experimento {cab['experimento']} creado: agente {cab['agente']}, proveedor "
+                f"{cab['proveedor']}, tope {cab['tope_total']}, reglas {','.join(cab['reglas'])}, "
+                f"{len(cab['sesiones'])} sesión(es). Huella de la cabecera (para la reserva): {huella_cab}"))
+            return
+        if opciones_exp:
+            raise CommandError("--experimento, --sesion-experimento, --reglas-experimento y --plan-sello solo valen "
+                               "con --iniciar-experimento.")
+
+        if o['registro_experimento']:
+            if not o['opensearch_id'] or o['piloto'] or o['iniciar_piloto'] or o['registro_piloto']:
+                raise CommandError("--registro-experimento exige --opensearch-id y no se combina con el piloto.")
+            if not (o['reserva'] and o['reserva_sello']):
+                raise CommandError("--registro-experimento exige --reserva y --reserva-sello (reserva sellada del "
+                                   "piloto natural que vincula el experimento).")
+            if dry == conf:
+                raise CommandError("Usa exactamente uno: --dry-run o --confirmar.")
+            huella = (o['wazuh_tls_sha256'] or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", huella):
+                raise CommandError("El experimento exige --wazuh-tls-sha256 con el SHA-256 completo (64 hex).")
+            try:
+                reserva = piloto_mod.ManifiestoReserva(o['reserva'], o['reserva_sello'])   # antes de procesar nada
+                with piloto_mod.RegistroPiloto(o['registro_experimento']) as reg:
+                    r = procesar_experimento_por_opensearch_id(
+                        o['opensearch_id'], o['agent_id'], registro=reg, reserva=reserva, tls_huella=huella,
+                        dry=dry, conf=conf, log=self.stdout.write)
+            except piloto_mod.RegistroPilotoError as e:
+                raise CommandError(f"Experimento: {e}.")
+            self.stdout.write("")
+            self.stdout.write(self.style.SUCCESS("=== Resultado del experimento (categorías sanitizadas) ==="))
+            for k in ("experimento", "modo", "regla", "texto", "llamadas_reales", "alert_id", "estado_analisis",
+                      "veredicto_ia", "riesgo_ia"):
+                self.stdout.write(f"  {k}: {r[k]}")
+            self.stdout.write(f"  intentos: {r['usados']}/{r['tope_total']}")
+            return
 
         if o.get('opensearch_id'):
             if o['piloto'] or o['iniciar_piloto'] or o['registro_piloto'] or o['reserva'] or o['reserva_sello'] \
@@ -627,6 +835,8 @@ class Command(BaseCommand):
         self.stdout.write(f"  -> REQUIERE_ATENCION:     {c['requiere_atencion']}")
         if c['no_representables']:
             self.stdout.write(f"  no representables:        {c['no_representables']}  (no caben en exp-entrada-1)")
+        if c['bloqueadas_experimento']:
+            self.stdout.write(f"  prueba controlada:        {c['bloqueadas_experimento']}  (sin reintentos; no se tocan)")
         if 'piloto' in c:
             p = c['piloto']
             self.stdout.write(f"  piloto: ya existentes={c['ya_existentes']} reservadas={c['reservadas']} "

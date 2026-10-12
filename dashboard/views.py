@@ -19,7 +19,7 @@ from usuarios.decorators import requiere_rol, usuario_tiene_rol
 from .models import (
     Alert, ActivoLogico, VentanaMantenimiento, RevisionHumana, CandidatoDataset,
 )
-from .ia.ingesta import ingestar_lote, reanalizar_alerta
+from .ia.ingesta import es_prueba_controlada, ingestar_lote, reanalizar_alerta
 from .ia.persistencia import registrar_correccion_humana
 from .ia.proveedores import nombre_proveedor_activo
 from .ia.alcance import ALCANCES, ALCANCES_VALIDOS
@@ -334,6 +334,9 @@ def update_alerts(request):
         return redirect('index')
 
     c = ingestar_lote(raw_alerts)
+    if c.get('bloqueadas_experimento'):
+        messages.info(request, f"{c['bloqueadas_experimento']} alerta(s) de prueba controlada sin cambios "
+                               f"(no se reanalizan).")
 
     if c['nuevas'] == 0 and c['recuperadas'] == 0:
         messages.info(request, "No hay alertas nuevas para importar.")
@@ -352,6 +355,9 @@ def update_alerts(request):
 def reclasificar_pendientes(request):
     """Re-análisis en lote (llama al modelo). Sólo POST + CSRF: un GET devuelve 405 sin efectos."""
     resultado = reclasificar_alertas_pendientes()
+    if resultado.get('bloqueadas_experimento'):
+        messages.info(request, f"{resultado['bloqueadas_experimento']} alerta(s) de prueba controlada excluida(s) "
+                               f"de la reclasificación (sin reintentos).")
     if resultado['total'] == 0:
         messages.info(request, "No hay alertas para reclasificar.")
     else:
@@ -369,15 +375,18 @@ def reclasificar_alertas_pendientes(pausa_segundos=PAUSA_ENTRE_LLAMADAS_GEMINI, 
     PENDING, ANALISIS_FALLIDO, OMITIDO_POLITICA y las legacy sin
     `estado_analisis` con riesgo_ia PENDING/No disponible/UNKNOWN.
 
-    NO toca COMPLETED. NO toca correcciones humanas. Re-resuelve el activo con
+    NO toca COMPLETED. NO toca correcciones humanas. NO toca alertas de prueba
+    controlada (se cuentan aparte, sin llamar ni modificar). Re-resuelve el activo con
     las asignaciones vigentes y re-aplica la política vigente. El fallo de una
     alerta NO detiene el lote. `proveedor` se inyecta sólo en pruebas.
     """
-    pendientes = Alert.objects.filter(
+    candidatas = list(Alert.objects.filter(
         Q(estado_analisis__in=['PENDING', 'ANALISIS_FALLIDO', 'OMITIDO_POLITICA'])
         | Q(estado_analisis__isnull=True, riesgo_ia__in=['PENDING', 'No disponible', 'UNKNOWN'])
-    )
-    total = pendientes.count()
+    ))
+    pendientes = [a for a in candidatas if not es_prueba_controlada(a)]
+    bloqueadas = len(candidatas) - len(pendientes)
+    total = len(pendientes)
     analizadas = omitidas = fallidas = 0
     for i, alerta in enumerate(pendientes):
         if i > 0 and pausa_segundos:
@@ -393,7 +402,8 @@ def reclasificar_alertas_pendientes(pausa_segundos=PAUSA_ENTRE_LLAMADAS_GEMINI, 
             omitidas += 1
         else:
             fallidas += 1
-    return {'total': total, 'analizadas': analizadas, 'omitidas': omitidas, 'fallidas': fallidas}
+    return {'total': total, 'analizadas': analizadas, 'omitidas': omitidas, 'fallidas': fallidas,
+            'bloqueadas_experimento': bloqueadas}
 
 
 @requiere_rol('ADMIN', 'ANALISTA')
@@ -534,6 +544,9 @@ def reintentar_analisis(request, alert_id):
     sigue siendo ANALISIS_FALLIDO; no hay reintentos automáticos.
     """
     alerta = get_object_or_404(Alert, id=alert_id)
+    if es_prueba_controlada(alerta):     # antes de leer Wazuh, llamar al modelo o tocar la fila
+        messages.error(request, "Alerta de prueba controlada: su análisis no admite reintentos.")
+        return redirect('index')
     if not alerta.analisis_fallido:
         messages.error(request, "Solo se puede reintentar una alerta con fallo de análisis.")
         return redirect('index')
