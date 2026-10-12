@@ -1,0 +1,254 @@
+{% load dashboard_extras %}{# Detalle de UNA alerta para el panel lateral. Solo lectura de lo guardado. #}
+{% with snap=alert.contexto_ia_snapshot fam=alert|familia_evento %}
+<div class="pd-cabecera">
+    <div class="pd-titulo">
+        <span class="ev-ico" title="Familia del evento: {{ fam.etiqueta }}"><span class="ico i-ev-{{ fam.icono }}" aria-hidden="true"></span></span>
+        <div>
+            <h2 tabindex="-1">Detalle del análisis</h2>
+            <p class="pd-sub">#{{ alert.id }} · {{ alert.descripcion|truncatechars:120 }}</p>
+        </div>
+        <div class="pd-botones">
+            <button type="button" class="btn-icono pd-volver" data-cerrar aria-label="Volver a la lista de alertas" title="Volver"><span class="ico i-chevron-derecha" aria-hidden="true" style="transform:rotate(180deg)"></span></button>
+            <button type="button" class="btn-icono" data-ampliar aria-pressed="false" aria-label="Ver detalle completo" title="Ver detalle completo"><span class="ico i-ampliar" aria-hidden="true"></span></button>
+            <button type="button" class="btn-icono" data-cerrar aria-label="Cerrar el detalle" title="Cerrar (Esc)"><span class="ico i-cerrar" aria-hidden="true"></span></button>
+        </div>
+    </div>
+    <div class="pd-chips">
+        {% include "dashboard/_clasificacion_alerta.html" %}
+        {% if alert.riesgo_ia %}<span class="pill"><span class="riesgo r-{{ alert.riesgo_ia|lower }}">Riesgo {{ alert.riesgo_ia }}</span>{% if alert.analisis_legado %}<span class="tag-legado">legado</span>{% endif %}</span>{% endif %}
+        <span class="pill" title="Estado del análisis">{% if alert.estado_analisis %}{{ alert.estado_analisis }}{% else %}Análisis legado (sin estado){% endif %}</span>
+        {% if alert.analisis_completado or alert.estado_revision != 'SIN_REVISAR' %}<span class="pill" title="Revisión del analista"><span class="ico i-revision" aria-hidden="true"></span>{% include "dashboard/_revision_alerta.html" %}</span>{% endif %}
+    </div>
+</div>
+
+<div class="pd-cuerpo">
+    <details class="pd-sec" data-por-defecto="abierta" open>
+        <summary><span class="ico i-modelo-ia" aria-hidden="true"></span>Descripción y explicación IA</summary>
+        <div class="pd-sec-cuerpo">
+            <div class="pd-sub-titulo">Descripción</div>
+            <p class="pd-texto">{{ alert.descripcion }}</p>
+            <div class="campos" style="margin:8px 0 12px;">
+                <dt>Familia del evento</dt><dd>{{ fam.etiqueta }}</dd>
+                <dt>Severidad Wazuh</dt><dd>{% if alert.severidad is not None %}<span class="sev {% if alert.severidad >= 12 %}sev-alta{% elif alert.severidad >= 7 %}sev-media{% else %}sev-baja{% endif %}">{{ alert.severidad }}</span>{% else %}—{% endif %}</dd>
+                <dt>Fecha</dt><dd>{{ alert.timestamp|default:alert.creado_en }}</dd>
+            </div>
+
+            {% if alert.analisis_legado %}
+            <div class="pd-aviso pd-aviso-legado">
+                <b>Análisis Legado - Pendiente de migrar al flujo IA actual</b><br>
+                Alerta <b>anterior al contrato de IA</b> (Sprint 2A+). El riesgo y la explicación que se
+                muestran vienen del flujo antiguo de Gemini y <b>no</b> siguen el contrato nuevo
+                (CVSS v3, clasificación binaria FALSO_POSITIVO/REQUIERE_ATENCION, evidencia faltante).
+                No se han reinterpretado ni modificado, y <b>no cuentan como trabajo pendiente ordinario</b>
+                del analista. Cuando esta alerta se migra al flujo IA actual, pasa al contrato nuevo.<br>
+                <b>Triage histórico:</b> {{ alert.estado }}
+            </div>
+            {% elif alert.omitido_por_politica %}
+            <div class="pd-aviso pd-aviso-legado">
+                <b>Omitida por política</b><br>
+                No se envió al modelo de IA. Motivo: <b>{{ alert.get_motivo_omision_display }}</b>.
+                Sigue visible y puede revisarse manualmente. No es un fallo de análisis y no tiene veredicto.
+            </div>
+            {% elif alert.analisis_fallido %}
+            <div class="pd-aviso pd-aviso-fallo">
+                <b>Análisis fallido</b><br>
+                Este análisis no pudo completarse. La alerta permanece visible y pendiente de reintento; no se ha asignado ningún veredicto.
+                {% if alert.explicacion_ia %}<br>Motivo: {{ alert.explicacion_ia }}{% endif %}
+            </div>
+            {% endif %}
+
+            {% if not alert.analisis_fallido %}
+            <div class="pd-sub-titulo">Explicación IA{% if alert.analisis_legado and alert.explicacion_ia %} <span class="tag-legado">legado</span>{% endif %}</div>
+            {% if alert.explicacion_ia %}<p class="pd-texto pd-caja">{{ alert.explicacion_ia }}</p>{% else %}<p class="sin-dato">—</p>{% endif %}
+            {% endif %}
+        </div>
+    </details>
+
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-informacion" aria-hidden="true"></span>Contexto del activo</summary>
+        <div class="pd-sec-cuerpo">
+            {% if snap.asset_type or snap.asset_criticality or snap.asset_os_family or snap.asset_os_role %}
+            <div class="pd-sub-titulo">Contexto congelado en el análisis</div>
+            <dl class="campos">
+                {% if snap.asset_type %}<dt>Tipo de activo</dt><dd>{{ snap.asset_type|etiqueta_activo:"asset_type" }} <small>{{ snap.asset_type }}</small></dd>{% endif %}
+                {% if snap.asset_criticality %}<dt>Criticidad</dt><dd>{{ snap.asset_criticality|etiqueta_activo:"asset_criticality" }} <small>{{ snap.asset_criticality }}</small></dd>{% endif %}
+                {% if snap.asset_os_family %}<dt>Sistema operativo</dt><dd>{{ snap.asset_os_family|etiqueta_activo:"asset_os_family" }} <small>{{ snap.asset_os_family }}</small></dd>{% endif %}
+                {% if snap.asset_os_role %}<dt>Rol del sistema</dt><dd>{{ snap.asset_os_role|etiqueta_activo:"asset_os_role" }} <small>{{ snap.asset_os_role }}</small></dd>{% endif %}
+                {% if snap.operational_window %}<dt>Ventana operativa</dt><dd>{{ snap.operational_window }}</dd>{% endif %}
+                {% if snap.authorized_context_es %}<dt>Contexto autorizado</dt><dd>{{ snap.authorized_context_es }}</dd>{% endif %}
+            </dl>
+            {% endif %}
+            {% if alert.activo_logico %}
+            <div class="pd-sub-titulo">Activo lógico (contexto experimental, no identificable)</div>
+            <p class="nota" style="margin-top:0;">Registro actual del activo asignado; el contexto usado por la IA es el congelado{% if not snap %} (esta alerta no tiene contexto congelado){% endif %}.</p>
+            <dl class="campos">
+                <dt>Identificador</dt><dd>{{ alert.activo_logico.identificador }}</dd>
+                <dt>Nombre</dt><dd>{{ alert.activo_logico.nombre_visible }}</dd>
+                <dt>Tipo</dt><dd>{{ alert.activo_logico.get_tipo_activo_display }}</dd>
+                <dt>Criticidad</dt><dd>{{ alert.activo_logico.get_criticidad_display }}</dd>
+                <dt>Sistema / rol</dt><dd>{{ alert.activo_logico.get_os_family_display }} / {{ alert.activo_logico.get_os_role_display }}</dd>
+                <dt>Horario</dt><dd>{% if alert.activo_logico.horario_sin_restriccion %}horario sin restricción{% else %}horario {{ alert.activo_logico.hora_inicio_operacion|time:"H:i" }}–{{ alert.activo_logico.hora_fin_operacion|time:"H:i" }}{% endif %} ({{ alert.activo_logico.zona_horaria }})</dd>
+            </dl>
+            {% elif not snap %}
+            <p class="sin-dato">Sin activo lógico asignado ni contexto congelado.</p>
+            {% endif %}
+        </div>
+    </details>
+
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-evidencia" aria-hidden="true"></span>Evidencia técnica</summary>
+        <div class="pd-sec-cuerpo">
+            {% if snap.evidencia_tecnica %}
+            {% with ev=snap.evidencia_tecnica %}
+            <div class="pd-sub-titulo">Evidencia técnica utilizada (categórica y anonimizada)</div>
+            <div class="campos-dos">
+            <dl class="campos">
+                <dt>Evento FIM</dt><dd>{{ ev.fim_event_type }}</dd>
+                <dt>Categoría de ruta</dt><dd>{{ ev.path_category }}</dd>
+                <dt>Extensión/tipo</dt><dd>{{ ev.file_extension }}</dd>
+                <dt>Hash disponible</dt><dd>{{ ev.hash_present|yesno:"sí,no" }}</dd>
+                <dt>Tamaño</dt><dd>{{ ev.size_info }}</dd>
+            </dl>
+            <dl class="campos">
+                <dt>Usuario (rol)</dt><dd>{{ ev.user_role_category }}</dd>
+                <dt>Proceso</dt><dd>{{ ev.process_category }}</dd>
+                <dt>Eventos correlacionados</dt><dd>{{ ev.correlated_events }}</dd>
+                <dt>Telemetría</dt><dd>{{ ev.telemetry_source }}</dd>
+                <dt>Ventana operativa</dt><dd>{{ snap.operational_window }}</dd>
+            </dl>
+            </div>
+            <details class="mas-campos">
+                <summary>Ver todos los campos guardados</summary>
+                {% for b in ev|bloques_evidencia %}
+                <div class="bloque-campos">
+                    <div class="pd-sub-titulo">{{ b.titulo }}</div>
+                    <dl class="campos">{% for k, v in b.campos %}<dt><code>{{ k }}</code></dt><dd>{{ v|valor_campo }}</dd>{% endfor %}</dl>
+                </div>
+                {% endfor %}
+                <div class="bloque-campos">
+                    <div class="pd-sub-titulo">Entrada congelada (anonimizada)</div>
+                    <dl class="campos">
+                        {% if snap.wazuh_level is not None %}<dt><code>wazuh_level</code></dt><dd>{{ snap.wazuh_level }}</dd>{% endif %}
+                        {% if snap.wazuh_rule_id %}<dt><code>wazuh_rule_id</code></dt><dd>{{ snap.wazuh_rule_id }}</dd>{% endif %}
+                        {% if snap.wazuh_rule_groups %}<dt><code>wazuh_rule_groups</code></dt><dd>{{ snap.wazuh_rule_groups|valor_campo }}</dd>{% endif %}
+                        {% if snap.alert_description_es %}<dt><code>alert_description_es</code></dt><dd>{{ snap.alert_description_es }}</dd>{% endif %}
+                        {% if snap.technical_evidence_es %}<dt><code>technical_evidence_es</code></dt><dd class="pd-texto">{{ snap.technical_evidence_es }}</dd>{% endif %}
+                        {% for k, v in snap|snapshot_restantes %}<dt><code>{{ k }}</code></dt><dd>{{ v|valor_campo }}</dd>{% endfor %}
+                    </dl>
+                </div>
+            </details>
+            {% endwith %}
+            {% else %}
+            <p class="sin-dato">Sin evidencia técnica congelada para esta alerta.</p>
+            {% if alert.wazuh_rule_id or alert.wazuh_rule_groups %}
+            <div class="pd-sub-titulo">Regla registrada en la alerta</div>
+            <dl class="campos">
+                {% if alert.wazuh_rule_id %}<dt>Regla</dt><dd>{{ alert.wazuh_rule_id }}</dd>{% endif %}
+                {% if alert.wazuh_rule_groups %}<dt>Grupos</dt><dd>{{ alert.wazuh_rule_groups|valor_campo }}</dd>{% endif %}
+            </dl>
+            {% endif %}
+            {% endif %}
+        </div>
+    </details>
+
+    {% if snap.maintenance_window %}
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-mantenimiento" aria-hidden="true"></span>Contexto de mantenimiento</summary>
+        <div class="pd-sec-cuerpo">
+            <p><b class="pd-texto">{{ snap.maintenance_window|mant_es }}</b></p>
+            <dl class="campos">
+                <dt>Estado</dt><dd><code>{{ snap.maintenance_window }}</code></dd>
+                {% if snap.maintenance_category %}<dt>Categoría</dt><dd>{{ snap.maintenance_category }}</dd>{% endif %}
+                {% if snap.maintenance_scope %}<dt>Alcance de la autorización</dt><dd>{{ snap.maintenance_scope|valor_campo }}</dd>{% endif %}
+                {% if snap.maintenance_scope_match %}<dt>Coincidencia con la operación observada</dt><dd>{{ snap.maintenance_scope_match|valor_campo }}</dd>{% endif %}
+            </dl>
+            <p class="nota"><span class="ico i-informacion" aria-hidden="true"></span>Estar dentro de una ventana autorizada no convierte la alerta en falso positivo: la IA pondera la evidencia técnica.</p>
+        </div>
+    </details>
+    {% endif %}
+
+    {% if not alert.analisis_legado and not alert.omitido_por_politica and not alert.analisis_fallido %}
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-metricas" aria-hidden="true"></span>Factores CVSS</summary>
+        <div class="pd-sec-cuerpo">
+            <div class="pd-sub-titulo">Devueltos por la IA · Resumen CVSS (contrato v3, en español)</div>
+            {% if alert.factores_cvss %}
+            <dl class="cvss-dos">
+                {% for k, v in alert.factores_cvss.items %}<div class="campos"><dt>{{ k|cvss_es }}</dt><dd class="{% if v == 'no_determinado' %}nd{% endif %}">{{ v }}</dd></div>{% endfor %}
+            </dl>
+            {% if alert.justificacion_cvss %}<div class="pd-sub-titulo">Justificación de la IA</div><p class="pd-texto pd-caja">{{ alert.justificacion_cvss }}</p>{% endif %}
+            {% else %}
+            <p class="nd">Sin datos CVSS (análisis pendiente).</p>
+            {% endif %}
+            {% if snap.observed_cvss_factors %}
+            <div class="pd-sub-titulo">Observados por SENTRIA (entrada del análisis, no son respuesta de la IA)</div>
+            <dl class="cvss-dos">
+                {% for k, v in snap.observed_cvss_factors.items %}<div class="campos"><dt>{{ k|cvss_es }}</dt><dd class="{% if v == 'no_determinado' %}nd{% endif %}">{{ v }}</dd></div>{% endfor %}
+            </dl>
+            {% endif %}
+            <p class="nota"><span class="ico i-informacion" aria-hidden="true"></span>«no_determinado» no equivale a «ninguno», «no_aplica» ni a un impacto inexistente.</p>
+        </div>
+    </details>
+
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-buscar" aria-hidden="true"></span>Evidencia faltante</summary>
+        <div class="pd-sec-cuerpo">
+            {% if alert.evidencia_faltante %}
+            <ul class="lista">{% for e in alert.evidencia_faltante %}<li>{{ e }}</li>{% endfor %}</ul>
+            {% else %}<p class="sin-dato">—</p>{% endif %}
+        </div>
+    </details>
+
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-recomendacion" aria-hidden="true"></span>Recomendación</summary>
+        <div class="pd-sec-cuerpo"><p class="pd-texto">{{ alert.recomendacion_ia|default:"—" }}</p></div>
+    </details>
+    {% endif %}
+
+    {% if not alert.analisis_legado %}
+    <details class="pd-sec" data-por-defecto="cerrada">
+        <summary><span class="ico i-historial" aria-hidden="true"></span>Origen del análisis</summary>
+        <div class="pd-sec-cuerpo">
+            <div class="etiquetas">
+                <span class="etiqueta">{{ alert.proveedor_ia|default:"—" }}</span>
+                <span class="etiqueta">{{ alert.modelo_ia|default:"modelo n/d" }}</span>
+                {% if alert.analizado_en %}<span class="etiqueta">{{ alert.analizado_en }}</span>{% endif %}
+                {% if alert.estado_analisis %}<span class="etiqueta">estado: {{ alert.estado_analisis }}</span>{% endif %}
+                {% if alert.contexto_ia_snapshot %}<span class="etiqueta">contexto congelado ✓</span>{% endif %}
+                {% if snap.schema_version %}<span class="etiqueta">entrada v{{ snap.schema_version }}</span>{% endif %}
+            </div>
+        </div>
+    </details>
+    {% endif %}
+
+    <details class="pd-sec" data-por-defecto="abierta" open>
+        <summary><span class="ico i-revision" aria-hidden="true"></span>Revisión del analista</summary>
+        <div class="pd-sec-cuerpo">
+            {% if alert.tiene_correccion_humana %}
+            <div class="pd-aviso pd-aviso-corr">
+                <b>Corrección del analista:</b> la clasificación vigente es
+                <b>{{ alert.get_correccion_veredicto_display }}</b>.
+                Clasificación original de la IA:
+                <b>{% if alert.veredicto_ia %}{{ alert.get_veredicto_ia_display }}{% else %}—{% endif %}</b>
+                (conservada, no sobrescrita).<br>
+                {% if alert.correccion_autor %}Por {{ alert.correccion_autor.username }}{% endif %}
+                {% if alert.correccion_fecha %} · {{ alert.correccion_fecha }}{% endif %}
+                {% if alert.correccion_motivo %}<br>Motivo: {{ alert.correccion_motivo }}{% endif %}
+            </div>
+            {% endif %}
+            {% if alert.dataset_aprobado %}
+            <div class="pd-aviso pd-aviso-ok">
+                <b>Dataset aprobado:</b> la salida supervisada, el snapshot y la aprobación de este
+                ejemplo son inmutables. No se admiten nuevas confirmaciones ni correcciones; cualquier
+                exclusión posterior debe hacerse de forma explícita y auditada desde la ficha del candidato.
+            </div>
+            {% endif %}
+            <div class="pd-revision">
+                <span class="rev">{% include "dashboard/_revision_alerta.html" %}</span>
+                {% include "dashboard/_acciones_alerta.html" with pref="p" %}
+            </div>
+            <button type="button" class="btn pd-ampliar-txt" data-ampliar><span class="ico i-ampliar" aria-hidden="true"></span><span data-ampliar-texto>Ver detalle completo</span></button>
+        </div>
+    </details>
+</div>
+{% endwith %}

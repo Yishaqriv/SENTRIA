@@ -1,0 +1,27 @@
+{% load roles %}{# Menú de acciones reales de una alerta. `pref` distingue la copia de la fila ("f") y la del panel ("p"). #}
+<div class="actions-dropdown">
+    <button type="button" class="act-menu-btn" aria-haspopup="true" aria-expanded="false"
+            id="am-btn-{{ pref }}{{ alert.id }}" data-menu="{{ pref }}{{ alert.id }}"
+            title="Acciones de la alerta {{ alert.id }}" aria-label="Acciones de la alerta {{ alert.id }}">
+        <span class="am-txt" aria-hidden="true">Acciones ▾</span><span class="ico i-acciones am-ico" aria-hidden="true"></span>
+    </button>
+    <div class="actions-menu" id="am-menu-{{ pref }}{{ alert.id }}" role="menu" aria-labelledby="am-btn-{{ pref }}{{ alert.id }}">
+        {% if pref != 'p' %}
+        <button type="button" class="am-item" role="menuitem" data-abrir="{{ alert.id }}">Ver detalle</button>
+        {% endif %}
+        {% if alert.analisis_completado and not alert.dataset_aprobado and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+        <a class="am-item" role="menuitem" href="{% url 'revisar_alerta' alert.id %}?accion=confirmar{% if cola_activa == 'auditoria_selectiva' %}&origen=auditoria_selectiva{% endif %}">Confirmar clasificación IA</a>
+        <a class="am-item" role="menuitem" href="{% url 'corregir_veredicto' alert.id %}{% if cola_activa == 'auditoria_selectiva' %}?origen=auditoria_selectiva{% endif %}">Corregir clasificación IA</a>
+        {% endif %}
+        {% if alert.analisis_fallido and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+        <a class="am-item" role="menuitem" href="{% url 'reintentar_analisis' alert.id %}">Reintentar análisis</a>
+        {% endif %}
+        {% if alert.candidato_dataset %}
+        <a class="am-item" role="menuitem" href="{% url 'candidato_detalle' alert.candidato_dataset.ejemplo_id %}">Ver estado del dataset</a>
+        {% endif %}
+        {% if alert.analisis_completado and not alert.dataset_aprobado and request.user|tiene_rol:"ADMIN,ANALISTA" %}
+        <a class="am-item am-danger" role="menuitem" href="{% url 'revisar_alerta' alert.id %}?accion=excluir">Excluir del dataset</a>
+        {% endif %}
+        <div class="am-vacio">No hay acciones disponibles para esta alerta con tu rol.</div>
+    </div>
+</div>

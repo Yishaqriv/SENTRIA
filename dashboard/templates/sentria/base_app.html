@@ -1,0 +1,86 @@
+{% extends "sentria/base.html" %}
+{% load static roles %}
+{% block body %}
+<a class="saltar" href="#contenido">Saltar al contenido</a>
+<div class="app">
+    <aside class="lateral glass glass-fuerte" id="lateral" aria-label="Navegación principal">
+        <a class="marca" href="{% url 'index' %}">
+            <img src="{% static 'sentria/marca/sentria-marca-480.png' %}"
+                 srcset="{% static 'sentria/marca/sentria-marca-480.png' %} 480w, {% static 'sentria/marca/sentria-marca-960.png' %} 960w"
+                 sizes="186px" width="186" height="66" alt="Sentria">
+            <span class="marca-sub">AI-Alert Security Classification</span>
+        </a>
+        {% with un=request.resolver_match.url_name %}
+        <nav class="nav" aria-label="Colas de alertas">
+            <a class="nav-item" href="{% url 'cola_atencion' %}"{% if un == 'cola_atencion' %} aria-current="page"{% endif %}>
+                <span class="ico i-atencion" aria-hidden="true"></span><span>Requiere atención</span>
+                {% if cola_activa %}<span class="nav-n">{{ n_efectivo_atencion }}</span>{% endif %}</a>
+            <a class="nav-item" href="{% url 'cola_falsos_positivos' %}"{% if un == 'cola_falsos_positivos' %} aria-current="page"{% endif %}>
+                <span class="ico i-falso-positivo" aria-hidden="true"></span><span>Falsos positivos</span>
+                {% if cola_activa %}<span class="nav-n">{{ n_efectivo_falso_positivo }}</span>{% endif %}</a>
+            <a class="nav-item" href="{% url 'cola_auditoria_selectiva' %}"{% if un == 'cola_auditoria_selectiva' %} aria-current="page"{% endif %}>
+                <span class="ico i-revision" aria-hidden="true"></span><span>Auditoría selectiva IA</span>
+                {% if cola_activa %}<span class="nav-n">{{ n_auditoria_selectiva }}</span>{% endif %}</a>
+            <a class="nav-item" href="{% url 'cola_pendientes' %}"{% if un == 'cola_pendientes' %} aria-current="page"{% endif %}>
+                <span class="ico i-pendiente" aria-hidden="true"></span><span>Pendientes y fallidas</span>
+                {% if cola_activa %}<span class="nav-n">{{ n_pendientes_tecnicos }}</span>{% endif %}</a>
+            <a class="nav-item" href="{% url 'cola_omitidas' %}"{% if un == 'cola_omitidas' %} aria-current="page"{% endif %}>
+                <span class="ico i-omitida" aria-hidden="true"></span><span>Omitidas por política</span>
+                {% if cola_activa %}<span class="nav-n">{{ n_omitidas }}</span>{% endif %}</a>
+            <a class="nav-item" href="{% url 'cola_legado' %}"{% if un == 'cola_legado' %} aria-current="page"{% endif %}
+               title="Análisis Legado - Pendiente de migrar al flujo IA actual">
+                <span class="ico i-legado" aria-hidden="true"></span><span>Análisis legado</span>
+                {% if cola_activa %}<span class="nav-n">{{ n_legado }}</span>{% endif %}</a>
+            <a class="nav-item" href="{% url 'index' %}"{% if un == 'index' %} aria-current="page"{% endif %}>
+                <span class="ico i-historial" aria-hidden="true"></span><span>Historial completo</span>
+                {% if cola_activa %}<span class="nav-n">{{ total }}</span>{% endif %}</a>
+        </nav>
+        <nav class="nav" aria-label="Gestión">
+            <a class="nav-item" href="{% url 'mantenimiento_lista' %}"{% if un == 'mantenimiento_lista' %} aria-current="page"{% endif %}>
+                <span class="ico i-mantenimiento" aria-hidden="true"></span><span>Mantenimiento</span></a>
+            {% if request.user|tiene_rol:"ADMIN,ANALISTA" %}
+            <a class="nav-item" href="{% url 'bandeja_dataset' %}"{% if un == 'bandeja_dataset' or un == 'candidato_detalle' or un == 'planificador_dataset' %} aria-current="page"{% endif %}>
+                <span class="ico i-dataset" aria-hidden="true"></span><span>Dataset</span></a>
+            <a class="nav-item" href="{% url 'metricas' %}"{% if un == 'metricas' %} aria-current="page"{% endif %}>
+                <span class="ico i-metricas" aria-hidden="true"></span><span>Métricas</span></a>
+            {% endif %}
+            {% if request.user|tiene_rol:"ADMIN" %}
+            <a class="nav-item" href="{% url 'lista_usuarios' %}"{% if un == 'lista_usuarios' or un == 'crear_usuario' or un == 'editar_usuario' or un == 'eliminar_usuario' %} aria-current="page"{% endif %}>
+                <span class="ico i-usuarios" aria-hidden="true"></span><span>Usuarios</span></a>
+            {% endif %}
+        </nav>
+        {% endwith %}
+        <div class="lateral-pie">
+            <div class="usuario">
+                <span class="avatar" aria-hidden="true">{{ request.user.username|first|upper }}</span>
+                <span>
+                    <span class="usuario-nombre">{{ request.user.username }}</span><br>
+                    <span class="usuario-rol">{% if request.user.is_superuser %}Superusuario{% else %}{{ request.user.perfilusuario.get_rol_display }}{% endif %}</span>
+                </span>
+            </div>
+            <form method="POST" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn-salir"><span class="ico i-salir" aria-hidden="true"></span>Salir</button>
+            </form>
+        </div>
+    </aside>
+
+    <div class="principal">
+        <div class="barra-movil">
+            <button type="button" class="btn-icono" data-menu-lateral aria-controls="lateral" aria-expanded="false"
+                    aria-label="Abrir la navegación"><span class="ico i-menu" aria-hidden="true"></span></button>
+            <img src="{% static 'sentria/marca/sentria-marca-480.png' %}" width="120" height="43" alt="Sentria">
+        </div>
+        {% if messages %}
+        <div class="mensajes" role="status">
+            {% for message in messages %}<div class="aviso aviso-{{ message.tags }}">{{ message }}</div>{% endfor %}
+        </div>
+        {% endif %}
+        <main id="contenido">
+        {% block content %}{% endblock %}
+        </main>
+    </div>
+    {# Columna derecha opcional a toda altura (detalle del análisis en las listas de alertas) #}
+    {% block panel %}{% endblock %}
+</div>
+{% endblock %}

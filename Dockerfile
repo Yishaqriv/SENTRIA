@@ -18,6 +18,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+# Estáticos recopilados al construir (WhiteNoise los sirve con DEBUG=False). Se usa la
+# configuración de prueba, sin secretos ni conexiones: hereda de settings.py la misma
+# STATIC_ROOT y el mismo almacenamiento que usa la aplicación al ejecutarse.
+RUN DJANGO_SETTINGS_MODULE=sentria_project.settings_prueba_docker \
+    python manage.py collectstatic --noinput
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
     && useradd --system --uid 10001 --no-create-home sentria \

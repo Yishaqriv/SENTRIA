@@ -19,6 +19,8 @@ python-dotenv==1.2.2
 
 # Servidor WSGI para producción/Docker
 gunicorn==26.0.0
+# Estáticos servidos por la propia aplicación con DEBUG=False (compatible con Django 6.0)
+whitenoise==6.12.0
 
 # Prototipo Flask legacy (sentria_web.py) — eliminar cuando se haga la limpieza
 # de código legado (ver roadmap en CLAUDE.md); no es parte de la app activa.

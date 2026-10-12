@@ -7,6 +7,8 @@ db.sqlite3
 .env
 *.log
 *.swp
+# Salida de `collectstatic` (se genera al construir la imagen Docker)
+staticfiles/
 
 # sentria_project/settings.py ya no se ignora: la versión versionada lee
 # todos los secretos desde variables de entorno (ver .env.example) y no

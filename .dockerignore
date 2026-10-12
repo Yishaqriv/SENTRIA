@@ -29,6 +29,8 @@ __pycache__/
 **/__pycache__/
 **/*.pyc
 sentria-venv/
+# `collectstatic` se ejecuta dentro de la construcción; no se copia una salida local
+staticfiles/
 venv/
 .vscode/
 *.swp

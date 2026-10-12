@@ -7128,3 +7128,206 @@ class IndexadorTLSRutasDashboardYDirigidaTests(TestCase):
         self.assertIn("huella TLS", str(e2.exception))
         self.assertFalse(ses.called)
         self.assertEqual(Alert.objects.count(), 0)
+
+
+# --------------------------------------------------------------------------
+# Frontend liquid glass: presentación, estáticos y navegación (sin red)
+# --------------------------------------------------------------------------
+from dashboard.templatetags import dashboard_extras as dx  # noqa: E402
+
+
+class FamiliaEventoTests(SimpleTestCase):
+    """El icono identifica la familia del evento a partir de lo ya guardado."""
+
+    def _a(self, ev=None, grupos_snap=None, grupos_alerta=None, snap=True):
+        s = None
+        if snap:
+            s = {"evidencia_tecnica": ev or {}}
+            if grupos_snap is not None:
+                s["wazuh_rule_groups"] = grupos_snap
+        return SimpleNamespace(contexto_ia_snapshot=s, wazuh_rule_groups=grupos_alerta)
+
+    def test_evidencia_especifica_primero(self):
+        self.assertEqual(dx.clave_familia_evento(self._a({"fim_event_type": "modificado"})), "fim")
+        self.assertEqual(dx.clave_familia_evento(self._a({"fim_event_type": "no_aplica", "sca_resultado": "fallido"})), "sca")
+        self.assertEqual(dx.clave_familia_evento(self._a({"fim_event_type": "no_aplica", "cuenta_operacion": "x"})), "account")
+        self.assertEqual(dx.clave_familia_evento(self._a({"win_auditoria_subcategoria": "x", "cuenta_actor": "y"})), "windows_audit_policy")
+        self.assertEqual(dx.clave_familia_evento(self._a({"win_dispositivo_clase": "x"})), "windows_device")
+        self.assertEqual(dx.clave_familia_evento(self._a({"win_canal": "aplicacion"})), "windows_event_application")
+        self.assertEqual(dx.clave_familia_evento(self._a({"win_canal": "sistema"})), "windows_event_system")
+
+    def test_grupos_de_regla_y_desconocido(self):
+        self.assertEqual(dx.clave_familia_evento(self._a(grupos_snap=["sshd", "authentication_failed"])), "authentication")
+        self.assertEqual(dx.clave_familia_evento(self._a(grupos_snap=["firewall"])), "network")
+        # una palabra ambigua (p. ej. solo «sshd» o «windows») no basta
+        self.assertEqual(dx.clave_familia_evento(self._a(grupos_snap=["sshd"])), "unknown")
+        self.assertEqual(dx.clave_familia_evento(self._a(grupos_snap=["windows", "windows_application"])), "unknown")
+        # alerta sin snapshot: grupos registrados en la alerta
+        self.assertEqual(dx.clave_familia_evento(self._a(snap=False, grupos_alerta=["syscheck"])), "fim")
+        self.assertEqual(dx.clave_familia_evento(self._a(snap=False)), "unknown")
+
+    def test_salida_del_filtro(self):
+        f = dx.familia_evento(self._a({"fim_event_type": "creado"}))
+        self.assertEqual(f, {"clave": "fim", "etiqueta": "Archivo (FIM)", "icono": "archivo"})
+        f = dx.familia_evento(self._a(snap=False))
+        self.assertEqual(f["icono"], "evento-generico")
+
+
+class BloquesEvidenciaTests(SimpleTestCase):
+    def test_agrupa_sin_repetir_la_rejilla_principal(self):
+        ev = {"fim_event_type": "no_aplica", "telemetry_source": "wazuh_agent", "rule_id": "60110",
+              "rule_groups": ["windows"], "cuenta_operacion": "cambio", "win_canal": "sistema",
+              "win_auditoria_cambio": "x", "campo_nuevo": 1}
+        bloques = {b["titulo"]: dict(b["campos"]) for b in dx.bloques_evidencia(ev)}
+        self.assertEqual(bloques["Regla de Wazuh"], {"rule_id": "60110", "rule_groups": ["windows"]})
+        self.assertEqual(bloques["Cuenta"], {"cuenta_operacion": "cambio"})
+        self.assertEqual(bloques["Evento de Windows"], {"win_canal": "sistema"})
+        self.assertEqual(bloques["Política de auditoría de Windows"], {"win_auditoria_cambio": "x"})
+        self.assertEqual(bloques["Otros campos"], {"campo_nuevo": 1})
+        todos = [k for b in dx.bloques_evidencia(ev) for k, _ in b["campos"]]
+        self.assertNotIn("fim_event_type", todos)
+        self.assertNotIn("telemetry_source", todos)
+
+    def test_snapshot_restantes_oculta_internos(self):
+        snap = {"schema_version": "1.4", "_diagnostico_fallo": {"x": 1}, "otra_clave": "v"}
+        self.assertEqual(dx.snapshot_restantes(snap), [("otra_clave", "v")])
+
+    def test_valor_campo_no_reinterpreta(self):
+        self.assertEqual(dx.valor_campo(True), "sí")
+        self.assertEqual(dx.valor_campo(["a", "b"]), "a, b")
+        self.assertEqual(dx.valor_campo("no_determinado"), "no_determinado")
+        self.assertEqual(dx.etiqueta_activo("equipo_personal", "asset_type"), "Equipo personal")
+        self.assertEqual(dx.etiqueta_activo("codigo_raro", "asset_type"), "codigo_raro")
+
+
+class DetalleLateralTests(TestCase):
+    def setUp(self):
+        self.analista = User.objects.create_user("fl_an", password="p")
+
+    def test_panel_y_detalle_completo_en_la_pagina(self):
+        snap = {
+            "schema_version": "1.4", "asset_type": "equipo_personal", "operational_window": "dentro_horario_operativo",
+            "maintenance_window": "dentro_ventana_declarada", "maintenance_category": "actualizacion_software",
+            "maintenance_scope": "ALCANCE-XYZ", "maintenance_scope_match": "COINCIDE-XYZ",
+            "observed_cvss_factors": {"attack_vector": "local"},
+            "evidencia_tecnica": {"fim_event_type": "no_aplica", "rule_id": "60110", "win_canal": "sistema"},
+            "_diagnostico_fallo": {"motivo": "INTERNO-NO-MOSTRAR"},
+        }
+        a = Alert.objects.create(titulo="t", descripcion="DESC-PANEL", estado="Pendiente", estado_analisis="COMPLETED",
+                                 veredicto_ia="FALSO_POSITIVO", riesgo_ia="LOW", contexto_ia_snapshot=snap,
+                                 factores_cvss={"attack_vector": "no_determinado"})
+        self.client.force_login(self.analista)
+        body = self.client.get(reverse("index")).content.decode()
+        self.assertIn('id="panel-detalle"', body)
+        self.assertIn(f'<template id="det-{a.id}">', body)
+        self.assertIn("ALCANCE-XYZ", body)
+        self.assertIn("COINCIDE-XYZ", body)
+        self.assertIn("Observados por SENTRIA", body)
+        self.assertIn("Devueltos por la IA", body)
+        self.assertIn("i-ev-sistema", body)
+        self.assertNotIn("INTERNO-NO-MOSTRAR", body)
+        self.assertIn("clasif-fp", body)
+
+
+class EstaticosFrontendTests(SimpleTestCase):
+    def test_referencias_estaticas_existen(self):
+        import re
+        from pathlib import Path
+        from django.conf import settings
+        from django.contrib.staticfiles import finders
+        base = Path(settings.BASE_DIR)
+        rutas = set()
+        for tpl in list(base.glob("dashboard/templates/**/*.html")) + list(base.glob("usuarios/templates/**/*.html")):
+            rutas.update(re.findall(r"{% static '([^']+)' %}", tpl.read_text(encoding="utf-8")))
+        css = finders.find("sentria/css/sentria.css")
+        self.assertTrue(css)
+        for rel in re.findall(r"url\(\.\./([^)]+)\)", Path(css).read_text(encoding="utf-8")):
+            rutas.add("sentria/" + rel)
+        self.assertGreater(len(rutas), 40)
+        faltan = [r for r in sorted(rutas) if not finders.find(r)]
+        self.assertEqual(faltan, [])
+
+    def test_misma_configuracion_de_estaticos_al_construir_y_ejecutar(self):
+        import importlib
+        from sentria_project import settings as prod
+        docker = importlib.import_module("sentria_project.settings_prueba_docker")
+        for nombre in ("STATIC_URL", "STATIC_ROOT", "STORAGES"):
+            self.assertEqual(getattr(docker, nombre), getattr(prod, nombre), nombre)
+        mw = prod.MIDDLEWARE
+        self.assertEqual(mw.index("whitenoise.middleware.WhiteNoiseMiddleware"),
+                         mw.index("django.middleware.security.SecurityMiddleware") + 1)
+
+
+class NavegacionPorRolTests(TestCase):
+    def setUp(self):
+        self.analista = User.objects.create_user("nav_an", password="p")
+        self.invitado = User.objects.create_user("nav_inv", password="p")
+        self.invitado.perfilusuario.rol = "INVITADO"; self.invitado.perfilusuario.save()
+        self.admin = User.objects.create_user("nav_ad", password="p")
+        self.admin.perfilusuario.rol = "ADMIN"; self.admin.perfilusuario.save()
+
+    def _body(self, u):
+        self.client.force_login(u)
+        return self.client.get(reverse("index")).content.decode()
+
+    def test_invitado(self):
+        b = self._body(self.invitado)
+        for no in (reverse("bandeja_dataset"), reverse("metricas"), reverse("lista_usuarios"),
+                   reverse("update_alerts"), reverse("exportar_csv"), reverse("reclasificar_pendientes")):
+            self.assertNotIn(f'"{no}"', b, no)
+        self.assertIn(f'"{reverse("mantenimiento_lista")}"', b)
+
+    def test_analista(self):
+        b = self._body(self.analista)
+        for si in (reverse("bandeja_dataset"), reverse("metricas"), reverse("update_alerts"), reverse("exportar_csv")):
+            self.assertIn(f'"{si}"', b, si)
+        for no in (reverse("lista_usuarios"), reverse("reclasificar_pendientes")):
+            self.assertNotIn(f'"{no}"', b, no)
+
+    def test_admin(self):
+        b = self._body(self.admin)
+        for si in (reverse("lista_usuarios"), reverse("reclasificar_pendientes"), reverse("metricas")):
+            self.assertIn(f'"{si}"', b, si)
+
+    def test_login_con_marca(self):
+        b = self.client.get(reverse("login")).content.decode()
+        self.assertIn("AI-Alert Security Classification", b)
+        self.assertIn("sentria/marca/sentria-marca-960.png", b)
+        self.assertIn('name="username"', b)
+        self.assertIn("sentria/js/sentria.js", b)
+
+
+class MasFiltrosTests(TestCase):
+    """Grupo «Más filtros»: todos los campos se siguen enviando; el contador solo cuenta
+    los filtros adicionales que la vista aplica de verdad."""
+
+    def setUp(self):
+        self.client.force_login(User.objects.create_user("mf_an", password="p"))
+
+    def _get(self, qs=""):
+        return self.client.get(reverse("index") + qs).content.decode()
+
+    def test_campos_y_boton_accesible(self):
+        body = self._get()
+        for nombre in ("q", "riesgo", "veredicto", "analisis", "motivo", "estado", "orden"):
+            self.assertIn(f'name="{nombre}"', body)
+        self.assertIn('data-mas-filtros aria-controls="filtros-mas"', body)
+        self.assertIn('id="filtros-mas" role="group"', body)
+        self.assertIn("classList.add('js')", body)
+        self.assertNotIn('class="mas-n"', body)
+
+    def test_contador_de_adicionales_activos(self):
+        body = self._get("?analisis=COMPLETED&estado=Revisada&riesgo=LOW")
+        self.assertIn('<span class="mas-n">2<span class="sr-only"> activos</span>', body)
+
+    def test_valores_no_validos_no_cuentan(self):
+        body = self._get("?estado=xxx&analisis=NADA&severidad=extrema")
+        self.assertNotIn('class="mas-n"', body)
+
+    def test_filtros_por_enlace_se_indican_y_se_conservan(self):
+        body = self._get("?revision=corregida&severidad=alta")
+        self.assertIn('<span class="mas-n">2', body)
+        self.assertIn('class="filtros-ocultos"', body)
+        self.assertIn("Revisión: corregida", body)
+        self.assertIn('<input type="hidden" name="revision" value="corregida">', body)
+        self.assertIn('<input type="hidden" name="severidad" value="alta">', body)

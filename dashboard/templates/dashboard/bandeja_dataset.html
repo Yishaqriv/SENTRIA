@@ -1,60 +1,19 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Dataset de entrenamiento | SENTRIA</title>
-    <style>
-        *, *::before, *::after { box-sizing:border-box; }
-        body { font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-               background:#070d1a; color:#d8e8f8; margin:0; font-size:15px; }
-        .header { display:flex; justify-content:space-between; align-items:center;
-                  padding:15px 36px; background:#0b1525; border-bottom:1px solid #14243c; }
-        .header h1 { margin:0; font-size:20px; letter-spacing:.04em; color:#e8f2ff; }
-        .btn-back { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:600;
-                    text-decoration:none; background:#132339; color:#9ab8d8; border:1px solid #23405f; }
-        .wrap { padding:24px 36px; max-width:1200px; margin:0 auto; }
-        .card { background:#0b1525; border:1px solid #1a3050; border-radius:12px; padding:20px 22px; margin-bottom:20px; }
-        .card h2 { margin:0 0 6px; font-size:16px; color:#e8f2ff; }
-        .card p.sub { margin:0 0 14px; font-size:13px; color:#7d99bb; }
-        .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:12px; }
-        .kpi { background:#0a1220; border:1px solid #16283f; border-radius:8px; padding:12px 14px; }
-        .kpi .n { font-size:22px; font-weight:800; color:#e8f2ff; }
-        .kpi .l { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#6f8cb0; margin-top:2px; }
-        .table-wrap { overflow-x:auto; }
-        table { width:100%; border-collapse:collapse; min-width:960px; }
-        th, td { text-align:left; padding:9px 12px; font-size:13px; border-bottom:1px solid #14243c; vertical-align:top; }
-        th { color:#6f8cb0; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
-        code { font-family:ui-monospace, Menlo, monospace; font-size:12px; color:#9fd0ff; }
-        .pill { display:inline-block; padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700; }
-        .st-INCOMPLETO { background:rgba(224,148,20,0.16); color:#f0b850; border:1px solid rgba(224,148,20,0.4); }
-        .st-LISTO_PARA_REVISION { background:rgba(40,120,200,0.16); color:#7fb8f0; border:1px solid rgba(40,120,200,0.4); }
-        .st-DEVUELTO { background:rgba(200,110,40,0.16); color:#f0a860; border:1px solid rgba(200,110,40,0.4); }
-        .st-APROBADO { background:rgba(20,160,80,0.16); color:#5fd88f; border:1px solid rgba(20,160,80,0.4); }
-        .st-EXCLUIDO { background:rgba(120,140,168,0.14); color:#9ab0c8; border:1px dashed rgba(140,160,190,0.4); }
-        .ok { color:#5fd88f; } .no { color:#f0906c; }
-        .empty { color:#5a789a; padding:24px; text-align:center; }
-        ul.rz { margin:4px 0 0; padding-left:16px; color:#c99; font-size:12px; }
-        .act { display:inline-block; padding:5px 11px; border-radius:6px; font-size:12px; font-weight:600;
-               text-decoration:none; background:#132339; color:#9cc4ee; border:1px solid #23405f; }
-    </style>
-</head>
-<body>
-<div class="header">
-    <h1>SENTRIA — Dataset de entrenamiento</h1>
-    <div style="display:flex; gap:10px;">
-        <form method="post" action="{% url 'sincronizar_dataset' %}" style="margin:0;">
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Dataset de entrenamiento{% endblock %}
+{% block content %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Dataset de entrenamiento</h1>
+    <p class="subtitulo">Candidatos supervisados construidos desde las revisiones del analista.</p></div>
+    <div class="acciones-globales">
+        <form method="post" action="{% url 'sincronizar_dataset' %}">
             {% csrf_token %}
-            <button type="submit" class="btn-back" style="cursor:pointer; font-family:inherit;" title="Actualiza los candidatos desde las revisiones humanas. Abrir esta página no modifica nada.">↻ Sincronizar candidatos</button>
+            <button type="submit" class="btn btn-primario" title="Actualiza los candidatos desde las revisiones humanas. Abrir esta página no modifica nada."><span class="ico i-actualizar" aria-hidden="true"></span>Sincronizar candidatos</button>
         </form>
-        <a href="{% url 'planificador_dataset' %}" class="btn-back">📐 Planificador (dry-run)</a>
-        <a href="{% url 'index' %}" class="btn-back">← Volver al dashboard</a>
+        <a href="{% url 'planificador_dataset' %}" class="btn"><span class="ico i-metricas" aria-hidden="true"></span>Planificador (dry-run)</a>
     </div>
-</div>
-
-<div class="wrap">
-    <div class="card">
-        {% if messages %}{% for m in messages %}<p class="sub"><b>{{ m }}</b></p>{% endfor %}{% endif %}
+</header>
+    <div class="card glass">
         <h2>Bandeja de candidatos supervisados</h2>
         <p class="sub">
             Los candidatos se crean al registrar la revisión de analista y se actualizan con
@@ -75,9 +34,9 @@
         </div>
     </div>
 
-    <div class="card">
+    <div class="card glass">
         <div class="table-wrap">
-        <table>
+        <table class="tabla-simple">
             <thead>
                 <tr>
                     <th>Ejemplo</th><th>Familia</th><th>Activo (anon.)</th>
@@ -96,14 +55,14 @@
                     <td>{{ f.riesgo }}</td>
                     <td>
                         <span class="pill st-{{ f.estado }}">{{ f.estado_display }}</span>
-                        {% if f.completado_por %}<div style="font-size:11px;color:#5a789a;">completó: {{ f.completado_por }}</div>{% endif %}
+                        {% if f.completado_por %}<div class="activo-meta">completó: {{ f.completado_por }}</div>{% endif %}
                         {% if f.incompleta_por %}
                         <ul class="rz">{% for r in f.incompleta_por %}<li>{{ r }}</li>{% endfor %}</ul>
                         {% endif %}
                     </td>
-                    <td>{% if f.privacidad_ok %}<span class="ok">✓ OK</span>{% else %}<span class="no">✗ revisar</span>{% endif %}</td>
+                    <td>{% if f.privacidad_ok %}<span class="ok">OK</span>{% else %}<span class="no">revisar</span>{% endif %}</td>
                     <td>{% if f.duplicado_de %}<code>{{ f.duplicado_de }}</code>{% else %}—{% endif %}</td>
-                    <td style="white-space:nowrap;">
+                    <td class="c-fecha">
                         <a class="act" href="{% url 'candidato_detalle' f.ejemplo_id %}">
                             {% if f.estado == 'LISTO_PARA_REVISION' %}Revisar / aprobar{% elif f.estado == 'APROBADO' or f.estado == 'EXCLUIDO' %}Ver{% else %}Ver y completar{% endif %}
                         </a>
@@ -117,5 +76,4 @@
         </div>
     </div>
 </div>
-</body>
-</html>
+{% endblock %}

@@ -1,52 +1,18 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Planificador del dataset | SENTRIA</title>
-    <style>
-        *, *::before, *::after { box-sizing:border-box; }
-        body { font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-               background:#070d1a; color:#d8e8f8; margin:0; font-size:15px; }
-        .header { display:flex; justify-content:space-between; align-items:center;
-                  padding:15px 36px; background:#0b1525; border-bottom:1px solid #14243c; }
-        .header h1 { margin:0; font-size:20px; letter-spacing:.04em; color:#e8f2ff; }
-        .btn-back { padding:8px 16px; border-radius:6px; font-size:13px; font-weight:600;
-                    text-decoration:none; background:#132339; color:#9ab8d8; border:1px solid #23405f; }
-        .wrap { padding:24px 36px; max-width:1100px; margin:0 auto; }
-        .card { background:#0b1525; border:1px solid #1a3050; border-radius:12px; padding:20px 22px; margin-bottom:20px; }
-        .card h2 { margin:0 0 6px; font-size:16px; color:#e8f2ff; }
-        .card p.sub { margin:0 0 14px; font-size:13px; color:#7d99bb; line-height:1.5; }
-        .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:12px; }
-        .kpi { background:#0a1220; border:1px solid #16283f; border-radius:8px; padding:12px 14px; }
-        .kpi .n { font-size:22px; font-weight:800; color:#e8f2ff; }
-        .kpi .l { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:#6f8cb0; margin-top:2px; }
-        .table-wrap { overflow-x:auto; }
-        table { width:100%; border-collapse:collapse; min-width:620px; }
-        th, td { text-align:left; padding:8px 12px; font-size:13px; border-bottom:1px solid #14243c; }
-        th { color:#6f8cb0; text-transform:uppercase; font-size:11px; letter-spacing:.04em; }
-        .warn { background:rgba(224,148,20,0.16); border:1px solid rgba(224,148,20,0.5);
-                color:#f0c05a; border-radius:10px; padding:14px 18px; margin-bottom:16px; font-size:13px; }
-        .ok, .kpi .n.ok { color:#5fd88f; } .no, .kpi .n.no { color:#f0906c; }
-        .pill { display:inline-block; padding:2px 9px; border-radius:6px; font-size:11px; font-weight:700;
-                background:rgba(40,120,200,0.16); color:#7fb8f0; border:1px solid rgba(40,120,200,0.4); }
-        .note { font-size:12px; color:#5a789a; margin-top:8px; }
-    </style>
-</head>
-<body>
-<div class="header">
-    <h1>SENTRIA — Planificador del dataset (dry-run)</h1>
-    <a href="{% url 'bandeja_dataset' %}" class="btn-back">← Volver al dataset</a>
-</div>
-
-<div class="wrap">
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Planificador del dataset{% endblock %}
+{% block content %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Planificador del dataset (dry-run)</h1></div>
+    <a href="{% url 'bandeja_dataset' %}" class="btn">Volver al dataset</a>
+</header>
     <div class="warn">
-        ⚠ <b>Solo planificación.</b> No se genera ningún evento, no se llama a Gemini ni a Vertex, y no se escribe
+        <b>Solo planificación.</b> No se genera ningún evento, no se llama a Gemini ni a Vertex, y no se escribe
         ningún JSONL. Todo lo de abajo son <b>conteos y categorías seguras</b> — nunca identificadores,
         rutas, usuarios, IP ni agent.id.
     </div>
 
-    <div class="card">
+    <div class="card glass">
         <h2>Situación real del dataset</h2>
         <p class="sub">
             Cifras <b>reales</b>, no proyectadas. <b>Recuperable no significa apto para entrenamiento</b>: un documento
@@ -54,7 +20,7 @@
             vigente y luego completa el flujo real (análisis, revisión del analista y aprobación).
         </p>
         {% if diag_legado.error %}
-        <p class="note" style="color:#f0906c;">{{ diag_legado.error }}</p>
+        <p class="note no">{{ diag_legado.error }}</p>
         {% endif %}
         <div class="kpis">
             <div class="kpi"><div class="n">{{ real.recuperables }}</div><div class="l">Legado recuperable (documento en Wazuh)</div></div>
@@ -70,7 +36,7 @@
         </div>
     </div>
 
-    <div class="card">
+    <div class="card glass">
         <h2>Disponibilidad por origen</h2>
         <p class="sub">
             <b>Pool utilizable</b>: sólo legado recuperable <b>y elegible</b> (agrupado por familia de regla). Las recuperables
@@ -87,7 +53,7 @@
         </p>
     </div>
 
-    <div class="card">
+    <div class="card glass">
         <h2>Asignación del pool utilizable a los conjuntos</h2>
         <p class="sub">
             Sólo con el pool utilizable de arriba. Objetivo: 100 ejemplos de entrenamiento, 20 de validación, 20–30 de prueba. Cada combinación
@@ -100,16 +66,16 @@
             <div class="kpi"><div class="n">{{ plan.asignado.test }} / {{ plan.objetivos.test }}</div><div class="l">Prueba (máx)</div></div>
         </div>
         <p class="note">
-            {% if plan.cumple_minimo_test %}<span class="ok">✓ el conjunto de prueba alcanza el mínimo de 20.</span>
-            {% else %}<span class="no">✗ el conjunto de prueba todavía no alcanza el mínimo de 20 con el pool utilizable actual.</span>{% endif %}
+            {% if plan.cumple_minimo_test %}<span class="ok">El conjunto de prueba alcanza el mínimo de 20.</span>
+            {% else %}<span class="no">El conjunto de prueba todavía no alcanza el mínimo de 20 con el pool utilizable actual.</span>{% endif %}
             Pendiente tras el pool utilizable: entrenamiento {{ plan.restante.train }} · validación {{ plan.restante.val }} · prueba {{ plan.restante.test }} (máx).
         </p>
     </div>
 
-    <div class="card">
+    <div class="card glass">
         <h2>Asignación por conjunto</h2>
         <div class="table-wrap">
-        <table>
+        <table class="tabla-simple">
             <thead><tr><th>Conjunto</th><th>Familia</th><th>Origen</th><th>Cantidad</th></tr></thead>
             <tbody>
                 {% for conjunto, filas in plan.detalle.items %}
@@ -132,5 +98,4 @@
         {% endif %}
     </div>
 </div>
-</body>
-</html>
+{% endblock %}
