@@ -1,20 +1,32 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <title>Crear usuario | SENTRIA</title>
-</head>
-<body>
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Crear usuario{% endblock %}
+{% block content %}<div class="pagina formulario-estrecho">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Nuevo usuario</h1></div>
+    <a href="{% url 'lista_usuarios' %}" class="btn">Volver</a>
+</header>
+    <div class="card glass">
+        <h2>Crear cuenta de usuario</h2>
 
-<h1>Crear usuario</h1>
+        <form method="POST">
+            {% csrf_token %}
 
-<form method="POST">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Guardar</button>
-</form>
+            {% for field in form %}
+            <div class="form-group">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% if field.errors %}
+                    <ul class="errorlist">
+                        {% for error in field.errors %}
+                            <li>{{ error }}</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
 
-<a href="{% url 'lista_usuarios' %}">Volver</a>
-
-</body>
-</html>
+            <button type="submit" class="btn btn-primario">Crear usuario</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,119 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Métricas del clasificador{% endblock %}
+{% block content %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Métricas del clasificador</h1>
+    <p class="subtitulo">Calculadas solo sobre alertas con verdad de terreno humana.</p></div>
+</header>
+    {% if muestra_insuficiente %}
+    <div class="warn">
+        <b>Muestra insuficiente</b> (n = {{ n_etiquetado }} &lt; 30): resultados preliminares,
+        no representativos del rendimiento del clasificador.
+    </div>
+    {% endif %}
+    <div class="card glass">
+        <h2>Base de evaluación</h2>
+        <p class="sub">
+            Se calcula <b>sólo</b> sobre alertas con <b>verdad de terreno humana</b> (revisión confirmada o corregida).
+            Clase positiva = <span class="tag">REQUIERE_ATENCION</span>. No se usa el campo <code>estado</code> antiguo;
+            las alertas sin revisión de analista no cuentan.
+        </p>
+        <div class="kpis">
+            <div class="kpi"><div class="n">{{ m.total_etiquetado }}</div><div class="l">Alertas etiquetadas</div></div>
+            <div class="kpi"><div class="n">{{ rev.confirmadas }}</div><div class="l">Revisiones confirmadas</div></div>
+            <div class="kpi"><div class="n">{{ rev.corregidas }}</div><div class="l">Revisiones corregidas</div></div>
+            <div class="kpi"><div class="n">{{ rev.excluidas }}</div><div class="l">Excluidas (sin verdad)</div></div>
+            <div class="kpi"><div class="n">{{ n_completed }}</div><div class="l">Análisis COMPLETED</div></div>
+        </div>
+        {% if m.sin_veredicto_ia %}
+        <p class="note">{{ m.sin_veredicto_ia }} revisión(es) con verdad de terreno pero sin clasificación de IA COMPLETED: excluidas del cálculo.</p>
+        {% endif %}
+    </div>
+
+    <div class="card glass">
+        <h2>Etiquetas por origen</h2>
+        <p class="sub">
+            Procedencia auditable de cada revisión. <b>No cambia la verdad de terreno ni los valores de la matriz</b> —
+            es sólo para saber qué tan representativa es la cifra de arriba.
+        </p>
+        <div class="kpis">
+            {% for f in origenes %}
+            <div class="kpi">
+                <div class="n">{{ f.n }}</div>
+                <div class="l">{{ f.etiqueta }}{% if not f.representativo %} <span class="tag" title="No representativo">no representativo</span>{% endif %}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% if n_no_representativo %}
+        <div class="warn" style="margin-top:12px;">
+            {{ n_no_representativo }} etiqueta(s) provienen de <b>pruebas controladas</b> (eventos de laboratorio
+            dirigidos, no un muestreo aleatorio de producción). Las pruebas controladas y las revisiones operativas
+            aisladas <b>no constituyen una muestra estadística representativa</b>. Las etiquetas de prueba controlada existentes
+            <b>no deben presentarse como rendimiento general del clasificador en producción.</b>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="card glass">
+        <h2>Matriz de confusión</h2>
+        <div class="matrix">
+            <div class="h"></div>
+            <div class="h">Humano: Requiere atención</div>
+            <div class="h">Humano: Falso positivo</div>
+
+            <div class="rowlabel">IA: Requiere atención</div>
+            <div class="cell tp"><div class="n">{{ m.tp }}</div><div class="l">TP</div></div>
+            <div class="cell fp"><div class="n">{{ m.fp }}</div><div class="l">FP</div></div>
+
+            <div class="rowlabel">IA: Falso positivo</div>
+            <div class="cell fn"><div class="n">{{ m.fn }}</div><div class="l">FN</div></div>
+            <div class="cell tn"><div class="n">{{ m.tn }}</div><div class="l">TN</div></div>
+        </div>
+        <p class="note">
+            TP: IA y humano coinciden en «requiere atención». · FP: IA pidió atención, el humano dijo falso positivo. ·
+            TN: ambos «falso positivo». · FN: IA dijo falso positivo, el humano exige atención.
+        </p>
+    </div>
+
+    <div class="card glass">
+        <h2>Métricas <span class="nchip">n etiquetado = {{ n_etiquetado }}</span></h2>
+        <div class="kpis">
+            <div class="kpi">
+                <div class="{% if metricas_pct.fpr is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.fpr is None %}NO CALCULABLE{% else %}{{ metricas_pct.fpr }} %{% endif %}</div>
+                <div class="l">FPR (falsos positivos)</div>
+                <div class="d">FP / (FP + TN) = {{ m.fp }} / {{ m.fpr_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.fnr is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.fnr is None %}NO CALCULABLE{% else %}{{ metricas_pct.fnr }} %{% endif %}</div>
+                <div class="l">FNR (falsos negativos)</div>
+                <div class="d">FN / (FN + TP) = {{ m.fn }} / {{ m.fnr_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.precision is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.precision is None %}NO CALCULABLE{% else %}{{ metricas_pct.precision }} %{% endif %}</div>
+                <div class="l">Precisión</div>
+                <div class="d">TP / (TP + FP) = {{ m.tp }} / {{ m.precision_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.recall is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.recall is None %}NO CALCULABLE{% else %}{{ metricas_pct.recall }} %{% endif %}</div>
+                <div class="l">Recall (sensibilidad)</div>
+                <div class="d">TP / (TP + FN) = {{ m.tp }} / {{ m.recall_den }} · n = {{ n_etiquetado }}</div>
+            </div>
+            <div class="kpi">
+                <div class="{% if metricas_pct.accuracy is None %}nc{% else %}n{% endif %}">
+                    {% if metricas_pct.accuracy is None %}NO CALCULABLE{% else %}{{ metricas_pct.accuracy }} %{% endif %}</div>
+                <div class="l">Exactitud</div>
+                <div class="d">(TP + TN) / n = {{ m.tp|add:m.tn }} / {{ m.total_etiquetado }} · n = {{ n_etiquetado }}</div>
+            </div>
+        </div>
+        <p class="note">
+            «NO CALCULABLE» cuando el denominador es cero (aún no hay casos suficientes de ese tipo).
+            {% if muestra_insuficiente %}<b>Con n = {{ n_etiquetado }} (&lt; 30) las cifras son preliminares y no concluyentes.</b>{% endif %}
+        </p>
+    </div>
+</div>
+{% endblock %}

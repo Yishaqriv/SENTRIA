@@ -1,44 +1,58 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <title>Usuarios | SENTRIA</title>
-</head>
-<body>
-    <h1>Gestión de usuarios</h1>
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Usuarios{% endblock %}
+{% block content %}<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Gestión de usuarios</h1>
+    <p class="subtitulo">Usuarios registrados ({{ usuarios|length }})</p></div>
+    <a href="{% url 'crear_usuario' %}" class="btn btn-primario"><span class="ico i-usuarios" aria-hidden="true"></span>Nuevo usuario</a>
+</header>
 
-    {% if messages %}
-        {% for message in messages %}
-            <p>{{ message }}</p>
-        {% endfor %}
-    {% endif %}
-
-    <a href="{% url 'crear_usuario' %}">Crear usuario</a>
-
-    <table border="1" cellpadding="8">
-        <tr>
-            <th>Usuario</th>
-            <th>Nombre</th>
-            <th>Correo</th>
-            <th>Rol</th>
-            <th>Activo</th>
-            <th>Acciones</th>
-        </tr>
-
-        {% for usuario in usuarios %}
-        <tr>
-            <td>{{ usuario.username }}</td>
-            <td>{{ usuario.first_name }} {{ usuario.last_name }}</td>
-            <td>{{ usuario.email }}</td>
-            <td>{{ usuario.perfilusuario.get_rol_display }}</td>
-            <td>{{ usuario.perfilusuario.activo }}</td>
-            <td>
-                <a href="{% url 'editar_usuario' usuario.id %}">Editar</a>
-                |
-                <a href="{% url 'eliminar_usuario' usuario.id %}">Eliminar</a>
-            </td>
-        </tr>
-        {% endfor %}
+<div class="card glass">
+    <div class="table-wrap">
+    <table class="tabla-simple">
+        <thead>
+            <tr>
+                <th>Usuario</th>
+                <th>Nombre completo</th>
+                <th>Correo</th>
+                <th>Rol</th>
+                <th>Activo</th>
+                <th>Acciones</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for usuario in usuarios %}
+            <tr>
+                <td><strong>{{ usuario.username }}</strong></td>
+                <td>{{ usuario.first_name }} {{ usuario.last_name }}</td>
+                <td>{{ usuario.email|default:"—" }}</td>
+                <td>
+                    <span class="rol-badge rol-{{ usuario.perfilusuario.rol }}">
+                        {{ usuario.perfilusuario.get_rol_display }}
+                    </span>
+                </td>
+                <td>
+                    {% if usuario.perfilusuario.activo %}
+                        <span class="activo-si">Activo</span>
+                    {% else %}
+                        <span class="activo-no">Inactivo</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <div class="acciones-globales">
+                        <a href="{% url 'editar_usuario' usuario.id %}" class="btn">Editar</a>
+                        <a href="{% url 'eliminar_usuario' usuario.id %}" class="btn btn-peligro">Eliminar</a>
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" class="empty">No hay usuarios registrados.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
     </table>
-</body>
-</html>
+    </div>
+</div>
+</div>
+{% endblock %}

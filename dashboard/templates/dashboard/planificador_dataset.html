@@ -1,0 +1,101 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Planificador del dataset{% endblock %}
+{% block content %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Planificador del dataset (dry-run)</h1></div>
+    <a href="{% url 'bandeja_dataset' %}" class="btn">Volver al dataset</a>
+</header>
+    <div class="warn">
+        <b>Solo planificación.</b> No se genera ningún evento, no se llama a Gemini ni a Vertex, y no se escribe
+        ningún JSONL. Todo lo de abajo son <b>conteos y categorías seguras</b> — nunca identificadores,
+        rutas, usuarios, IP ni agent.id.
+    </div>
+
+    <div class="card glass">
+        <h2>Situación real del dataset</h2>
+        <p class="sub">
+            Cifras <b>reales</b>, no proyectadas. <b>Recuperable no significa apto para entrenamiento</b>: un documento
+            legado que sigue en Wazuh sólo podría entrar al dataset si además es <b>elegible</b> según la política
+            vigente y luego completa el flujo real (análisis, revisión del analista y aprobación).
+        </p>
+        {% if diag_legado.error %}
+        <p class="note no">{{ diag_legado.error }}</p>
+        {% endif %}
+        <div class="kpis">
+            <div class="kpi"><div class="n">{{ real.recuperables }}</div><div class="l">Legado recuperable (documento en Wazuh)</div></div>
+            <div class="kpi"><div class="n ok">{{ real.elegibles }}</div><div class="l">Legado elegible según política</div></div>
+            <div class="kpi"><div class="n no">{{ real.no_elegibles }}</div><div class="l">Legado no elegible (no cuenta)</div></div>
+            <div class="kpi"><div class="n">{{ real.sin_documento_recuperable }}</div><div class="l">Legado sin documento recuperable</div></div>
+            <div class="kpi"><div class="n ok">{{ real.aprobados }}</div><div class="l">Candidatos realmente aprobados</div></div>
+        </div>
+        <div class="warn" style="margin-top:14px; margin-bottom:0;">
+            Déficit real: objetivo {{ real.objetivo_min }}–{{ real.objetivo_max }} ejemplos (100 entrenamiento · 20 validación
+            · 20–30 prueba) − {{ real.aprobados }} aprobado(s) = <b>faltan {{ real.deficit_min }}–{{ real.deficit_max }}</b>.
+            Los aprobados todavía no están asignados a un conjunto.
+        </div>
+    </div>
+
+    <div class="card glass">
+        <h2>Disponibilidad por origen</h2>
+        <p class="sub">
+            <b>Pool utilizable</b>: sólo legado recuperable <b>y elegible</b> (agrupado por familia de regla). Las recuperables
+            no elegibles, las que no tienen documento y la capacidad estimada de laboratorio <b>no se suman</b>.
+        </p>
+        <div class="kpis">
+            <div class="kpi"><div class="n">{{ disponibilidad.legado_recuperado }}</div><div class="l">Pool utilizable (legado elegible)</div></div>
+            <div class="kpi"><div class="n">{{ capacidad_ubuntu_estimada }}</div><div class="l">Ubuntu controlado — capacidad estimada (no cuenta)</div></div>
+            <div class="kpi"><div class="n">{{ disponibilidad.agente_windows_laptop01_futuro }}</div><div class="l">Windows LAPTOP-01 (pendiente)</div></div>
+        </div>
+        <p class="note">
+            La capacidad Ubuntu es una estimación de laboratorio sobre {{ n_linux }} activo(s) lógico(s) Linux: no son alertas
+            reales y sólo se convertirán en pool cuando Wazuh genere las alertas y estas completen el flujo.
+        </p>
+    </div>
+
+    <div class="card glass">
+        <h2>Asignación del pool utilizable a los conjuntos</h2>
+        <p class="sub">
+            Sólo con el pool utilizable de arriba. Objetivo: 100 ejemplos de entrenamiento, 20 de validación, 20–30 de prueba. Cada combinación
+            (familia, origen) se asigna COMPLETA a un único conjunto — nunca se reparte entre dos — para evitar
+            duplicados y fuga entre entrenamiento y prueba.
+        </p>
+        <div class="kpis">
+            <div class="kpi"><div class="n">{{ plan.asignado.train }} / {{ plan.objetivos.train }}</div><div class="l">Entrenamiento</div></div>
+            <div class="kpi"><div class="n">{{ plan.asignado.val }} / {{ plan.objetivos.val }}</div><div class="l">Validación</div></div>
+            <div class="kpi"><div class="n">{{ plan.asignado.test }} / {{ plan.objetivos.test }}</div><div class="l">Prueba (máx)</div></div>
+        </div>
+        <p class="note">
+            {% if plan.cumple_minimo_test %}<span class="ok">El conjunto de prueba alcanza el mínimo de 20.</span>
+            {% else %}<span class="no">El conjunto de prueba todavía no alcanza el mínimo de 20 con el pool utilizable actual.</span>{% endif %}
+            Pendiente tras el pool utilizable: entrenamiento {{ plan.restante.train }} · validación {{ plan.restante.val }} · prueba {{ plan.restante.test }} (máx).
+        </p>
+    </div>
+
+    <div class="card glass">
+        <h2>Asignación por conjunto</h2>
+        <div class="table-wrap">
+        <table class="tabla-simple">
+            <thead><tr><th>Conjunto</th><th>Familia</th><th>Origen</th><th>Cantidad</th></tr></thead>
+            <tbody>
+                {% for conjunto, filas in plan.detalle.items %}
+                    {% for f in filas %}
+                    <tr>
+                        <td><span class="pill">{{ conjunto }}</span></td>
+                        <td>{{ f.familia }}</td>
+                        <td>{{ f.origen }}</td>
+                        <td>{{ f.n }}</td>
+                    </tr>
+                    {% endfor %}
+                {% empty %}
+                <tr><td colspan="4">Sin asignaciones todavía (sin disponibilidad).</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+        {% if plan.sin_asignar %}
+        <p class="note">{{ plan.sin_asignar|length }} bucket(s) con disponibilidad sobrante sin asignar (objetivo ya cubierto).</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

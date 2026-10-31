@@ -1,0 +1,36 @@
+# --- Secretos y credenciales: nunca entran en la imagen (la configuración se pasa al ejecutar) ---
+**/.env
+**/.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*-sa.json
+**/*credencial*
+**/*token*
+
+# --- Respaldos y volcados de bases de datos ---
+**/*.sql
+**/*.sql.gz
+**/*.dump
+**/*.bak
+**/RESPALDO*
+**/*.sqlite3
+
+# --- Seguimiento privado y material local ---
+seguimiento-local/
+**/seguimiento-local/
+**/*.log
+
+# --- Control de versiones y entornos de desarrollo ---
+.git
+.gitignore
+__pycache__/
+**/__pycache__/
+**/*.pyc
+sentria-venv/
+# `collectstatic` se ejecuta dentro de la construcción; no se copia una salida local
+staticfiles/
+venv/
+.vscode/
+*.swp

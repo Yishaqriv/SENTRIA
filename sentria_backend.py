@@ -1,121 +1,319 @@
+"""
+Puente entre Wazuh y SENTRIA.
+
+- get_latest_alerts(): consulta el indexador Wazuh (proyecta también rule.id).
+- anonimizar_texto():  se re-exporta desde dashboard.ia.anonimizacion.
+- analyze_with_gemini() / get_analyzed_alerts(): SHIM legacy DEGRADADO. Desde el
+  Sprint 2B ningún flujo operativo lo usa (la ingesta va por dashboard.ia.ingesta,
+  que exige contexto de activo y aplica la política + el contrato estricto). Se
+  conserva solo para que los prototipos legacy (root views.py, sentria_web.py)
+  no rompan al importarse; devuelve un resultado "no disponible", nunca un
+  veredicto.
+
+Este módulo NO crea ningún cliente de red al importarse.
+
+TLS del indexador: TODA consulta exige la huella SHA-256 del certificado de Wazuh
+(`tls_huella` explícita o la variable de entorno WAZUH_TLS_SHA256). Se comprueba
+tras el handshake y antes de enviar credenciales o consultas; si falta o no
+coincide, la consulta falla. No hay alternativa sin verificar.
+"""
+import os
+import re
+import sys
+
 import requests
-import google.generativeai as genai
 import urllib3
+from dotenv import load_dotenv
+
+# Carga del .env con la misma precedencia que settings.py: $SENTRIA_ENV_FILE
+# (obligatorio que exista y tenga permisos <=600) y si no el .env local. Esto
+# permite ejecutar este módulo desde un worktree distinto al del .env canónico.
+# `override=True` mantiene la prioridad del .env sobre variables sueltas del
+# shell, pero sobre el archivo CORRECTO (no una búsqueda ciega desde el cwd).
+_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+if _REPO_DIR not in sys.path:
+    sys.path.append(_REPO_DIR)
+try:
+    from sentria_project.env_utils import EnvFileError, localizar_env_file
+
+    _ENV_FILE = localizar_env_file(_REPO_DIR)
+    if _ENV_FILE is not None:
+        load_dotenv(_ENV_FILE, override=True)
+except EnvFileError:
+    raise
+except Exception:
+    load_dotenv(override=True)  # último recurso: búsqueda estándar de python-dotenv
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# CONFIGURACIÓN
-WAZUH_URL = "https://localhost:9200"
-INDEXER_USER = "admin"
-INDEXER_PASS = "U30tI8IT09iKOJbFFX.j.LwnX0HG2ZU4"
-INDEX_NAME = "wazuh-alerts-*"
+WAZUH_URL = os.environ.get("WAZUH_URL", "https://localhost:9200")
+INDEXER_USER = os.environ.get("INDEXER_USER", "")
+INDEXER_PASS = os.environ.get("INDEXER_PASS", "")
+INDEX_NAME = os.environ.get("WAZUH_INDEX_NAME", "wazuh-alerts-*")
 
-GEMINI_API_KEY = "AIzaSyCdaSekFv9RjZG1PIjOU8xuqGZLBzVGMic"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.5-flash")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.5-flash")
+# Compatibilidad: anonimizar_texto y auxiliares viven en dashboard.ia.
+from dashboard.ia.anonimizacion import (  # noqa: E402,F401
+    anonimizar_texto,
+    _enmascarar_ips_privadas,
+    _enmascarar_por_etiqueta,
+)
 
-def get_latest_alerts():
-    url = f"{WAZUH_URL}/{INDEX_NAME}/_search"
 
+_RE_HUELLA_TLS = re.compile(r"[0-9a-f]{64}")
+
+
+class _AdaptadorHuellaTLS(requests.adapters.HTTPAdapter):
+    """
+    Fija la huella SHA-256 (DER) del certificado del indexador. urllib3 la comprueba justo después del handshake
+    TLS y ANTES de enviar la petición: si no coincide, no sale ni la consulta ni la cabecera de credenciales.
+    """
+    def __init__(self, huella, **kw):
+        self._huella = huella
+        super().__init__(**kw)
+
+    def init_poolmanager(self, *args, **kw):
+        kw["assert_fingerprint"] = self._huella
+        return super().init_poolmanager(*args, **kw)
+
+
+class IndexadorTLSError(RuntimeError):
+    """No hay una huella TLS válida del indexador: no se envía nada."""
+
+
+def _huella_indexador(tls_huella=None):
+    """Huella explícita o, si no se indica, la de WAZUH_TLS_SHA256 (configuración local del proceso)."""
+    huella = str(tls_huella if tls_huella is not None else os.environ.get("WAZUH_TLS_SHA256", "")).strip().lower()
+    if not huella:
+        raise IndexadorTLSError("falta la huella TLS del indexador (WAZUH_TLS_SHA256): "
+                                "no se envían credenciales a Wazuh sin verificar el certificado")
+    if not _RE_HUELLA_TLS.fullmatch(huella):
+        raise IndexadorTLSError("huella TLS del indexador inválida: se espera el SHA-256 de 64 hex del certificado")
+    return huella
+
+
+def _consultar_indexador(query, *, timeout, tls_huella=None):
+    """Único `GET .../_search` al indexador: siempre con la huella fijada (ver docstring del módulo)."""
+    huella = _huella_indexador(tls_huella)
+    try:
+        sesion = sesion_indexador_fijada(huella)
+    except ValueError as e:
+        raise IndexadorTLSError(str(e)) from None
+    with sesion:
+        return sesion.get(f"{WAZUH_URL}/{INDEX_NAME}/_search", auth=(INDEXER_USER, INDEXER_PASS),
+                          json=query, verify=False, timeout=timeout)
+
+
+def sesion_indexador_fijada(huella):
+    """
+    Sesión `requests` para el indexador con huella fijada. Sin proxies del entorno (`trust_env=False`), para que
+    ningún intermediario reciba las credenciales. El certificado de Wazuh es autofirmado y no hay CA legible: la
+    cadena no se valida (`verify=False` en la llamada) y la confianza la da la huella exacta del certificado.
+    """
+    huella = str(huella or "").strip().lower()
+    if not _RE_HUELLA_TLS.fullmatch(huella):
+        raise ValueError("huella TLS del indexador inválida: se espera el SHA-256 de 64 hex del certificado")
+    if not WAZUH_URL.lower().startswith("https://"):
+        raise ValueError("la huella TLS exige un WAZUH_URL https://")
+    sesion = requests.Session()
+    sesion.trust_env = False
+    sesion.mount("https://", _AdaptadorHuellaTLS(huella))
+    return sesion
+
+
+def get_latest_alerts(size=1, agent_id=None, min_level=None, tls_huella=None):
+    """
+    Consulta de SOLO LECTURA al indexador Wazuh. `GET .../_search`.
+    - `agent_id`:  filtra por `agent.id` (la ingesta controlada procesa un
+      único agente). `agent.id` es capa privada (P).
+    - `min_level`: pre-filtra por `rule.level >= min_level` en el propio
+      OpenSearch (optimización; la política vuelve a comprobar el nivel).
+    - `tls_huella`: SHA-256 del certificado del indexador; si no se indica, se
+      usa WAZUH_TLS_SHA256. La conexión solo continúa (y solo entonces se
+      envían las credenciales) si el certificado coincide.
+    """
     query = {
-        "size": 1,
-        "sort": [
-            {
-                "@timestamp": {
-                    "order": "desc"
-                }
-            }
-        ],
-        "_source": [
-            "rule.description",
-            "rule.level",
-            "rule.groups",
-            "@timestamp"
-        ]
+        "size": size,
+        "sort": [{"@timestamp": {"order": "desc"}}],
+        "_source": _SOURCE_FIELDS,
     }
+    filtros = []
+    if agent_id is not None:
+        filtros.append({"term": {"agent.id": str(agent_id)}})
+    if min_level is not None:
+        filtros.append({"range": {"rule.level": {"gte": int(min_level)}}})
+    if filtros:
+        query["query"] = {"bool": {"filter": filtros}}
 
-    response = requests.get(
-        url,
-        auth=(INDEXER_USER, INDEXER_PASS),
-        json=query,
-        verify=False
-    )
+    response = _consultar_indexador(query, timeout=15, tls_huella=tls_huella)
+    response.raise_for_status()
 
     data = response.json()
     hits = data.get("hits", {}).get("hits", [])
+    return [_normalizar_hit(h) for h in hits]
 
-    alerts = []
-    for hit in hits:
-        source = hit.get("_source", {})
 
-        description = source.get("rule", {}).get("description", "N/A")
-        level = source.get("rule", {}).get("level", "N/A")
-        groups = source.get("rule", {}).get("groups", [])
-        timestamp = source.get("@timestamp", "N/A")
+# agent.id / syscheck.* son CAPA PRIVADA (P) / evidencia cruda: se proyectan
+# aquí, pero `dashboard.ia.evidencia`/`prompt` los convierten a valores
+# categóricos seguros antes de que nada llegue al prompt / snapshot / dashboard.
+_SOURCE_FIELDS = [
+    "rule.description", "rule.level", "rule.groups", "rule.id", "rule.firedtimes",
+    "agent.id", "@timestamp", "decoder.name",
+    "syscheck.path", "syscheck.event", "syscheck.mode",
+    "syscheck.size_before", "syscheck.size_after",
+    "syscheck.sha1_after", "syscheck.sha256_after", "syscheck.md5_after",
+    "syscheck.uid_after", "syscheck.gid_after", "syscheck.uname_after", "syscheck.gname_after",
+    "syscheck.perm_after", "syscheck.audit.process.name",
+    # Entrada 1.1 (3F.8): SCA y cuentas. Capa P/cruda: evidencia.py solo emite categorías.
+    "data.sca.type", "data.sca.policy", "data.sca.check.id", "data.sca.check.result",
+    "data.sca.check.previous_result", "data.sca.check.compliance.cis",
+    "data.sca.check.compliance.mitre_tactics",
+    "data.uid", "data.gid", "data.shell",
+    "data.win.system.eventID", "data.win.system.channel", "data.win.eventdata",
+    # Entrada 1.2: proveedor de los eventos Application/System (evidencia.py solo emite la lista permitida)
+    # y hora original del evento Windows (TimeCreated/SystemTime, UTC), distinta de la recepción en Wazuh.
+    "data.win.system.providerName", "data.win.system.systemTime",
+]
 
-        alerts.append({
-            "description": description,
-            "level": level,
-            "groups": ", ".join(groups) if isinstance(groups, list) else str(groups),
-            "timestamp": timestamp
-        })
+# Atributos de cuenta que informan los eventos 4720/4738 (documentación de Microsoft de ambos eventos).
+# En el formato «delta» un atributo no cambiado vale "-" (Wazuh lo omite); en cuentas locales (SAM) el 4738
+# trae el valor ACTUAL de todos los atributos, y Microsoft advierte que entonces no puede saberse cuál cambió.
+_WIN_ATRIBUTOS_CUENTA = ("samAccountName", "displayName", "userPrincipalName", "homeDirectory", "homePath",
+                         "scriptPath", "profilePath", "userWorkstations", "passwordLastSet", "accountExpires",
+                         "primaryGroupId", "allowedToDelegateTo", "userParameters", "sidHistory", "logonHours")
 
-    return alerts
 
+def _win_formato_atributos(informados):
+    """'valores_completos' (cuenta local: samAccountName siempre informado junto a otros) o 'delta'."""
+    return "valores_completos" if ("samAccountName" in informados and len(informados) >= 3) else "delta"
+
+
+def _sca_crudo(data):
+    sca = (data or {}).get("sca") or {}
+    if sca.get("type") != "check":
+        return None
+    chk = sca.get("check") or {}
+    comp = chk.get("compliance") or {}
+    return {"policy": sca.get("policy"), "id": chk.get("id"), "result": chk.get("result"),
+            "previous_result": chk.get("previous_result"), "cis": comp.get("cis"),
+            "mitre_tactics": comp.get("mitre_tactics")}
+
+
+def _win_crudo(data):
+    """Capa P: SIDs, NOMBRES de los atributos informados, formato del evento, valores UAC (hex),
+    proveedor y hora original del evento (entrada 1.2). El nombre de usuario NO se propaga (solo si termina en `$`,
+    es decir, cuenta de equipo); de los atributos solo se usa si están informados, nunca su valor.
+    Entrada 1.4: SOLO en 4719 (subcategoría y acción de auditoría) y 6416 (clase del dispositivo) se añaden esos
+    campos públicos. Del resto de `eventdata` (aplicación, rutas, mensajes, identificadores, descripciones,
+    fabricantes, ubicación) no se propaga nada."""
+    win = (data or {}).get("win") or {}
+    sysw = win.get("system") or {}
+    if not sysw.get("eventID") and not sysw.get("channel"):
+        return None
+    ed = win.get("eventdata") or {}
+    informados = sorted(k for k in _WIN_ATRIBUTOS_CUENTA if str(ed.get(k, "")).strip() not in ("", "-"))
+    crudo = {"event_id": (str(sysw.get("eventID")) if sysw.get("eventID") not in (None, "") else None),
+            "channel": sysw.get("channel"), "proveedor": sysw.get("providerName"),
+            "system_time": sysw.get("systemTime"),
+            "target_sid": ed.get("targetSid"), "subject_sid": ed.get("subjectUserSid"),
+            "member_sid": ed.get("memberSid"),
+            "target_es_equipo": str(ed.get("targetUserName") or "").endswith("$"),
+            "atributos_informados": informados,
+            "formato_atributos": _win_formato_atributos(informados),
+            "uac_anterior": ed.get("oldUacValue"), "uac_nuevo": ed.get("newUacValue")}
+    if crudo["event_id"] == "4719":
+        crudo.update({"auditoria_subcategoria_guid": ed.get("subcategoryGuid"),
+                      "auditoria_subcategoria_nombre": ed.get("subcategory"),
+                      "auditoria_cambios": ed.get("auditPolicyChanges"),
+                      "auditoria_cambios_id": ed.get("auditPolicyChangesId")})
+    elif crudo["event_id"] == "6416":
+        crudo.update({"dispositivo_clase": ed.get("className"), "dispositivo_clase_id": ed.get("classId")})
+    return crudo
+
+
+def _normalizar_hit(hit):
+    source = hit.get("_source", {}) or {}
+    rule = source.get("rule", {}) or {}
+    agent = source.get("agent", {}) or {}
+    sc = source.get("syscheck", {}) or {}
+    audit = (sc.get("audit", {}) or {})
+    proc = (audit.get("process", {}) or {})
+    groups = rule.get("groups", [])
+    return {
+        "opensearch_id": hit.get("_id"),
+        "description": rule.get("description", "N/A"),
+        "level": rule.get("level", "N/A"),
+        "groups": ", ".join(groups) if isinstance(groups, list) else str(groups),
+        "rule_id": rule.get("id"),
+        "rule_firedtimes": rule.get("firedtimes"),
+        "agent_id": agent.get("id"),   # capa P: sólo para el resolver de activos
+        "timestamp": source.get("@timestamp", "N/A"),
+        "decoder_name": (source.get("decoder", {}) or {}).get("name"),
+        # syscheck (FIM) — evidencia CRUDA; se categoriza/anonimiza en evidencia.py
+        "syscheck_path": sc.get("path"),
+        "syscheck_event": sc.get("event"),
+        "syscheck_mode": sc.get("mode"),
+        "syscheck_size_before": sc.get("size_before"),
+        "syscheck_size_after": sc.get("size_after"),
+        "syscheck_hash_present": bool(sc.get("sha256_after") or sc.get("sha1_after") or sc.get("md5_after")),
+        "syscheck_uid_after": sc.get("uid_after"),
+        "syscheck_uname_after": sc.get("uname_after"),
+        "syscheck_perm_after": sc.get("perm_after"),
+        "syscheck_process_name": proc.get("name"),
+        # Entrada 1.1 — crudo (capa P); se categoriza en dashboard.ia.evidencia
+        "sca": _sca_crudo(source.get("data")),
+        "cuenta_linux": ({k: (source.get("data") or {}).get(k) for k in ("uid", "gid", "shell")}
+                         if any((source.get("data") or {}).get(k) not in (None, "") for k in ("uid", "gid", "shell"))
+                         else None),
+        "win": _win_crudo(source.get("data")),
+    }
+
+
+def _get_search(query, timeout=15, tls_huella=None):
+    """`GET .../_search` para lecturas por `_id` (solo lectura), con la huella TLS fijada."""
+    return _consultar_indexador(query, timeout=timeout, tls_huella=tls_huella)
+
+
+def _query_por_ids(opensearch_ids, agent_id=None):
+    """Consulta por `_id`; con `agent_id`, el indexador filtra también por `agent.id`."""
+    ids = {"ids": {"values": [str(i) for i in opensearch_ids]}}
+    if agent_id is None:
+        consulta = ids
+    else:
+        consulta = {"bool": {"filter": [ids, {"term": {"agent.id": str(agent_id)}}]}}
+    return {"size": len(opensearch_ids), "_source": _SOURCE_FIELDS, "query": consulta}
+
+
+def get_alert_by_id(opensearch_id, agent_id=None, tls_huella=None):
+    """Lectura de UN documento de Wazuh por su `_id` (para reintentar un análisis). `tls_huella`: como en
+    `get_latest_alerts` (si falta, WAZUH_TLS_SHA256 del entorno)."""
+    response = _get_search(_query_por_ids([opensearch_id], agent_id), tls_huella=tls_huella)
+    hits = response.json().get("hits", {}).get("hits", [])
+    return _normalizar_hit(hits[0]) if hits else None
+
+
+def get_alerts_by_ids(opensearch_ids, agent_id=None):
+    """Lectura en lote por `_id` -> {opensearch_id: alerta normalizada}. Falla ante HTTP != 2xx."""
+    opensearch_ids = list(opensearch_ids)
+    if not opensearch_ids:
+        return {}
+    response = _get_search(_query_por_ids(opensearch_ids, agent_id), timeout=20)
+    response.raise_for_status()
+    return {h.get("_id"): _normalizar_hit(h) for h in response.json().get("hits", {}).get("hits", [])}
+
+
+# --- SHIM legacy degradado. No lo use ningún flujo nuevo. ---
 def analyze_with_gemini(alert):
-    prompt = f"""
-    Analyze this cybersecurity alert and respond in this exact format:
+    return {
+        "risk": "PENDING",
+        "reason": "Ruta legacy sin contexto de activo; el análisis va por dashboard.ia.ingesta (Sprint 2B).",
+    }
 
-    RISK: <LOW, MEDIUM, HIGH, CRITICAL>
-    REASON: <short explanation>
-
-    Alert:
-    Description: {alert['description']}
-    Level: {alert['level']}
-    Groups: {alert['groups']}
-    Timestamp: {alert['timestamp']}
-    """
-
-    try:
-        response = model.generate_content(prompt)
-        text = response.text.strip()
-
-        risk = "UNKNOWN"
-        reason = text
-
-        lines = text.splitlines()
-        for line in lines:
-            if line.upper().startswith("RISK:"):
-                risk = line.split(":", 1)[1].strip()
-            elif line.upper().startswith("REASON:"):
-                reason = line.split(":", 1)[1].strip()
-
-        return {
-            "risk": risk,
-            "reason": reason
-        }
-
-    except Exception as e:
-        return {
-            "risk": "PENDING",
-            "reason": f"Gemini unavailable: {str(e)}"
-        }
 
 def get_analyzed_alerts():
-    raw_alerts = get_latest_alerts()
-    final_alerts = []
-
-    for alert in raw_alerts:
-        analysis = analyze_with_gemini(alert)
-
-        final_alerts.append({
-            "description": alert["description"],
-            "level": alert["level"],
-            "groups": alert["groups"],
-            "timestamp": alert["timestamp"],
-            "risk": analysis["risk"],
-            "reason": analysis["reason"]
-        })
-
-    return final_alerts
+    final = []
+    for alert in get_latest_alerts():
+        a = analyze_with_gemini(alert)
+        final.append({**alert, "risk": a["risk"], "reason": a["reason"]})
+    return final

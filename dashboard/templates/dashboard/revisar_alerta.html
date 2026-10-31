@@ -1,0 +1,68 @@
+{% extends "sentria/base_app.html" %}
+{% load dashboard_extras %}
+{% block titulo %}Revisión Analista{% endblock %}
+{% block content %}
+<div class="pagina formulario-estrecho">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Revisión Analista</h1></div>
+    <a href="{% url 'index' %}" class="btn">Volver</a>
+</header>
+  <div class="card glass">
+    {% if accion == 'EXCLUIDA' %}
+      <h2>Excluir la alerta #{{ alerta.id }} del dataset</h2>
+      <p class="sub">Se usa cuando no hay evidencia suficiente para etiquetar. No genera verdad de terreno y no cuenta para métricas.</p>
+    {% else %}
+      <h2>Confirmar la clasificación de la IA — alerta #{{ alerta.id }}</h2>
+      <p class="sub">El analista está de acuerdo con la IA. La verdad de terreno queda igual a la clasificación de la IA. Los campos originales de la IA no se tocan.</p>
+    {% endif %}
+
+
+    <div class="box">
+        <h3>Alerta</h3>
+        {{ alerta.descripcion|truncatechars:200 }}<br>
+        <b>Severidad Wazuh:</b> {{ alerta.severidad|default:"—" }}
+        {% if alerta.activo_logico %} &nbsp;·&nbsp; <b>Activo:</b> {{ alerta.activo_logico.identificador }}{% endif %}
+    </div>
+
+    <div class="box">
+        <h3>Clasificación automática de la IA</h3>
+        {% if alerta.veredicto_ia == 'REQUIERE_ATENCION' %}<span class="pill p-at">Requiere atención</span>
+        {% elif alerta.veredicto_ia == 'FALSO_POSITIVO' %}<span class="pill p-fp">Falso positivo</span>
+        {% else %}—{% endif %}
+        &nbsp;·&nbsp; <b>Riesgo IA:</b> {{ alerta.riesgo_ia|default:"—" }}
+        {% if alerta.explicacion_ia %}<br><br>{{ alerta.explicacion_ia }}{% endif %}
+    </div>
+
+    <form method="POST">
+        {% csrf_token %}
+        <input type="hidden" name="accion" value="{{ accion|lower }}">
+        <input type="hidden" name="origen" value="{{ origen_param }}">
+
+        <label class="fld">Categoría del motivo <span class="req">*</span></label>
+        <select name="motivo_categoria" required>
+            <option value="">— elige —</option>
+            {% for val, txt in motivos %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+        </select>
+
+        {% if accion == 'CONFIRMADA' %}
+        <label class="fld">Riesgo revisado (opcional — por defecto se conserva «{{ alerta.riesgo_ia|default:"—" }}»)</label>
+        <select name="riesgo_revisado">
+            <option value="">(conservar el de la IA)</option>
+            {% for val, txt in riesgos %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+        </select>
+        {% endif %}
+
+        <label class="fld">Nota (opcional)</label>
+        <textarea name="nota" rows="3" placeholder="Sólo si la categoría no basta. No es obligatorio."></textarea>
+        <div class="note">La categoría suele bastar; la nota libre es opcional.</div>
+
+        <div class="btn-row">
+            <a href="{% url 'index' %}" class="btn">Cancelar</a>
+            <button type="submit" class="btn {% if accion == 'EXCLUIDA' %}btn-aviso{% else %}btn-primario{% endif %}">
+                {% if accion == 'EXCLUIDA' %}Excluir del dataset{% else %}Confirmar clasificación{% endif %}
+            </button>
+        </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,21 +1,24 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <title>Eliminar usuario | SENTRIA</title>
-</head>
-<body>
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Eliminar usuario{% endblock %}
+{% block content %}<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Eliminar usuario</h1></div>
+    <a href="{% url 'lista_usuarios' %}" class="btn">Volver</a>
+</header>
+    <div class="card glass confirmar-tarjeta">
+        <span class="ico i-atencion icono-aviso" aria-hidden="true"></span>
+        <h2>Confirmar eliminación</h2>
+        <p>Estás a punto de eliminar permanentemente la cuenta de:</p>
+        <span class="usuario-destacado">{{ usuario.username }}</span>
+        <p class="note">Esta acción no se puede deshacer.</p>
 
-<h1>Eliminar usuario</h1>
-
-<p>¿Seguro que quieres eliminar a <strong>{{ usuario.username }}</strong>?</p>
-
-<form method="POST">
-    {% csrf_token %}
-    <button type="submit">Sí, eliminar</button>
-</form>
-
-<a href="{% url 'lista_usuarios' %}">Cancelar</a>
-
-</body>
-</html>
+        <div class="btn-row">
+            <a href="{% url 'lista_usuarios' %}" class="btn">Cancelar</a>
+            <form method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-peligro">Sí, eliminar</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

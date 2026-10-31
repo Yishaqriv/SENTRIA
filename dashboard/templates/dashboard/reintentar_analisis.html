@@ -1,0 +1,33 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Reintentar análisis{% endblock %}
+{% block content %}
+<div class="pagina formulario-estrecho">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Reintentar análisis</h1></div>
+    <a href="{% url 'index' %}" class="btn">Volver</a>
+</header>
+  <div class="card glass">
+    <h2>Alerta #{{ alerta.id }}</h2>
+    <p class="sub">Reintento individual del análisis de una alerta con <b>fallo de análisis</b>. Se recupera la evidencia técnica actual de Wazuh y se vuelve a enviar al modelo <b>una sola vez</b>. Si vuelve a fallar, la alerta sigue en fallo de análisis.</p>
+
+    <div class="box">
+        <h3>Alerta</h3>
+        {{ alerta.descripcion|truncatechars:180 }}<br>
+        <b>Severidad Wazuh:</b> {{ alerta.severidad|default:"—" }}
+        {% if alerta.activo_logico %} &nbsp;·&nbsp; <b>Activo:</b> {{ alerta.activo_logico.identificador }}{% endif %}
+    </div>
+    <div class="box">
+        <h3>Motivo del fallo anterior</h3>
+        {{ alerta.explicacion_ia|default:"no registrado" }}
+    </div>
+
+    <form method="POST">
+        {% csrf_token %}
+        <div class="btn-row">
+            <a href="{% url 'index' %}" class="btn">Cancelar</a>
+            <button type="submit" class="btn btn-primario">Reintentar ahora</button>
+        </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,136 +1,278 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta http-equiv="refresh" content="10">
-    <title>SENTRIA Dashboard</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #0f172a;
-            color: white;
-            margin: 0;
-            padding: 0;
-        }
+{% extends "sentria/base_app.html" %}
+{% load roles dashboard_extras %}
+{% block titulo %}{{ cola_titulo }}{% endblock %}
+{% block content %}
+<section class="tablero glass glass-fuerte" aria-labelledby="titulo-cola">
+    <header class="tablero-cabecera">
+        <div>
+            <h1 id="titulo-cola">{{ cola_titulo }}</h1>
+            <p class="subtitulo">{{ cola_subtitulo }}</p>
+        </div>
+        <div class="acciones-globales">
+            {% if request.user|tiene_rol:"ADMIN,ANALISTA" %}
+            <form method="post" action="{% url 'update_alerts' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-primario"><span class="ico i-actualizar" aria-hidden="true"></span>Actualizar</button>
+            </form>
+            <a href="{% url 'exportar_csv' %}{% if query_string %}?{{ query_string }}{% endif %}" class="btn"><span class="ico i-exportar" aria-hidden="true"></span>Exportar CSV</a>
+            {% endif %}
+            {% if request.user|tiene_rol:"ADMIN" %}
+            <form method="post" action="{% url 'reclasificar_pendientes' %}"
+                  onsubmit="return confirm('¿Re-analizar las alertas con fallo de análisis (y las legacy pendientes)? Puede tardar según la cantidad y la pausa entre llamadas.');">
+                {% csrf_token %}
+                <button type="submit" class="btn"><span class="ico i-actualizar" aria-hidden="true"></span>Reclasificar fallidas</button>
+            </form>
+            {% endif %}
+        </div>
+    </header>
 
-        h1 {
-            text-align: center;
-            margin-top: 30px;
-            margin-bottom: 20px;
-            font-size: 48px;
-        }
-
-        .button-container {
-            text-align: center;
-            margin-bottom: 20px;
-        }
-
-        .update-button {
-            display: inline-block;
-            padding: 12px 24px;
-            background: #1e293b;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: bold;
-            border: 1px solid #475569;
-        }
-
-        .update-button:hover {
-            background: #334155;
-        }
-
-        table {
-            width: 90%;
-            margin: auto;
-            border-collapse: collapse;
-            background: #0b1324;
-        }
-
-        th, td {
-            padding: 12px;
-            border: 1px solid #444;
-            text-align: center;
-        }
-
-        th {
-            background: #1e293b;
-        }
-
-        tr:nth-child(even) {
-            background: #111c33;
-        }
-
-        .empty-message {
-            text-align: center;
-            margin-top: 30px;
-            font-size: 18px;
-            color: #cbd5e1;
-        }
-    </style>
-</head>
-<body>
-
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; padding:0 40px;">
-
-    <h1>AI Alert Security Classification</h1>
-
-    <div>
-        <span style="margin-right:15px;">
-            👤 {{ request.user.username }}
-        </span>
-
-        <form method="POST" action="{% url 'logout' %}" style="display:inline;">
-    {% csrf_token %}
-    <button type="submit"
-        style="
-        padding:8px 12px;
-        background:#dc2626;
-        color:white;
-        border:none;
-        border-radius:6px;
-        font-weight:bold;
-        cursor:pointer;
-        ">
-        Cerrar sesión
-    </button>
-</form>
+    <!-- Tarjetas: IA = clasificación original; efectivo = con la corrección del analista. No son particiones del total. -->
+    <div class="tarjetas">
+        <a class="tarjeta glass" href="{% url 'index' %}">
+            <span class="tarjeta-ico"><span class="ico i-alertas" aria-hidden="true"></span></span>
+            <span class="tarjeta-txt"><span class="tarjeta-titulo">Total</span><br><span class="tarjeta-valor">{{ total }}</span></span>
+        </a>
+        <a class="tarjeta glass t-atencion" href="{% url 'cola_atencion' %}">
+            <span class="tarjeta-ico"><span class="ico i-atencion" aria-hidden="true"></span></span>
+            <span class="tarjeta-txt"><span class="tarjeta-titulo">Requiere atención</span>
+                <span class="tarjeta-par">IA <b>{{ n_ia_atencion }}</b><span class="sep">·</span>Efectivo <b>{{ n_efectivo_atencion }}</b></span></span>
+        </a>
+        <a class="tarjeta glass t-fp" href="{% url 'cola_falsos_positivos' %}">
+            <span class="tarjeta-ico"><span class="ico i-falso-positivo" aria-hidden="true"></span></span>
+            <span class="tarjeta-txt"><span class="tarjeta-titulo">Falsos positivos</span>
+                <span class="tarjeta-par">IA <b>{{ n_ia_falso_positivo }}</b><span class="sep">·</span>Efectivo <b>{{ n_efectivo_falso_positivo }}</b></span></span>
+        </a>
+        <a class="tarjeta glass t-pendientes" href="{% url 'cola_pendientes' %}">
+            <span class="tarjeta-ico"><span class="ico i-pendiente" aria-hidden="true"></span></span>
+            <span class="tarjeta-txt"><span class="tarjeta-titulo">Pendientes y fallidas</span><br><span class="tarjeta-valor">{{ n_pendientes_tecnicos }}</span>
+                <span class="tarjeta-desglose">Fallo de análisis: {{ n_fallidas }}</span></span>
+        </a>
+        <a class="tarjeta glass" href="{% url 'cola_omitidas' %}">
+            <span class="tarjeta-ico"><span class="ico i-omitida" aria-hidden="true"></span></span>
+            <span class="tarjeta-txt"><span class="tarjeta-titulo">Omitidas por política</span><br><span class="tarjeta-valor">{{ n_omitidas }}</span></span>
+        </a>
     </div>
 
-</div>
-
-    <div class="button-container">
-        <a href="/update_alerts" class="update-button">Actualizar alertas</a>
+    <div class="franja-riesgo glass glass-suave">
+        <span class="fr-titulo">Riesgo IA:</span>
+        <span class="riesgo r-critical">CRITICAL<span class="fr-n">{{ n_critical }}</span></span>
+        <span class="riesgo r-high">HIGH<span class="fr-n">{{ n_high }}</span></span>
+        <span class="riesgo r-medium">MEDIUM<span class="fr-n">{{ n_medium }}</span></span>
+        <span class="riesgo r-low">LOW<span class="fr-n">{{ n_low }}</span></span>
+        <span class="fr-nota">Contadores <b>IA</b> = clasificación original del modelo · <b>efectivo</b> = con la corrección del analista aplicada.</span>
     </div>
 
-    <table>
-        <tr>
-            <th>Descripción</th>
-            <th>Severidad</th>
-            <th>Fuente</th>
-            <th>Fecha</th>
-            <th>Riesgo IA</th>
-            <th>Explicación IA</th>
-        </tr>
+    <!-- Filtros (se mantienen en la cola actual) -->
+    <form method="GET" action="" class="filtros glass glass-suave" role="search" aria-label="Filtrar alertas">
+        <div class="filtros-fila">
+            <div class="campo campo-buscar">
+                <label for="f-q">Buscar</label>
+                <div class="campo-con-ico">
+                    <span class="ico i-buscar" aria-hidden="true"></span>
+                    <input id="f-q" type="text" name="q" value="{{ filtro_q }}" placeholder="descripción de la alerta...">
+                </div>
+            </div>
+            <div class="campo">
+                <label for="f-riesgo">Riesgo IA</label>
+                <select id="f-riesgo" name="riesgo">
+                    <option value="">Todos los niveles</option>
+                    <option value="CRITICAL" {% if filtro_riesgo == 'CRITICAL' %}selected{% endif %}>Critical</option>
+                    <option value="HIGH"     {% if filtro_riesgo == 'HIGH'     %}selected{% endif %}>High</option>
+                    <option value="MEDIUM"   {% if filtro_riesgo == 'MEDIUM'   %}selected{% endif %}>Medium</option>
+                    <option value="LOW"      {% if filtro_riesgo == 'LOW'      %}selected{% endif %}>Low</option>
+                </select>
+            </div>
+            <div class="campo">
+                <label for="f-veredicto">Clasificación IA</label>
+                <select id="f-veredicto" name="veredicto">
+                    <option value="">Todos</option>
+                    <option value="REQUIERE_ATENCION" {% if filtro_veredicto == 'REQUIERE_ATENCION' %}selected{% endif %}>Requiere atención</option>
+                    <option value="FALSO_POSITIVO"    {% if filtro_veredicto == 'FALSO_POSITIVO'    %}selected{% endif %}>Falso positivo</option>
+                </select>
+            </div>
+            {% filtros_adicionales_activos filtro_analisis filtro_motivo filtro_estado filtro_revision filtro_severidad as extra_activos %}
+            {# Filtros adicionales: en línea si hay espacio; si no, plegados bajo «Más filtros». #}
+            <div class="filtros-mas" id="filtros-mas" role="group" aria-label="Filtros adicionales">
+                <div class="campo">
+                    <label for="f-analisis">Análisis</label>
+                    <select id="f-analisis" name="analisis">
+                        <option value="">Todos</option>
+                        <option value="COMPLETED"        {% if filtro_analisis == 'COMPLETED'        %}selected{% endif %}>Completado</option>
+                        <option value="PENDING"          {% if filtro_analisis == 'PENDING'          %}selected{% endif %}>Pendiente</option>
+                        <option value="OMITIDO_POLITICA" {% if filtro_analisis == 'OMITIDO_POLITICA' %}selected{% endif %}>Omitido por política</option>
+                        <option value="ANALISIS_FALLIDO" {% if filtro_analisis == 'ANALISIS_FALLIDO' %}selected{% endif %}>Fallo de análisis</option>
+                    </select>
+                </div>
+                <div class="campo">
+                    <label for="f-motivo">Motivo omisión</label>
+                    <select id="f-motivo" name="motivo">
+                        <option value="">Todos</option>
+                        <option value="SIN_CONTEXTO_ACTIVO" {% if filtro_motivo == 'SIN_CONTEXTO_ACTIVO' %}selected{% endif %}>Sin contexto de activo</option>
+                        <option value="NIVEL_NO_ELEGIBLE"   {% if filtro_motivo == 'NIVEL_NO_ELEGIBLE'   %}selected{% endif %}>Nivel no elegible</option>
+                        <option value="RUIDO_OPERATIVO"     {% if filtro_motivo == 'RUIDO_OPERATIVO'     %}selected{% endif %}>Ruido operativo</option>
+                        <option value="REGLA_EXCLUIDA"      {% if filtro_motivo == 'REGLA_EXCLUIDA'      %}selected{% endif %}>Regla excluida</option>
+                    </select>
+                </div>
+                <div class="campo">
+                    <label for="f-estado">Estado triage</label>
+                    <select id="f-estado" name="estado">
+                        <option value="">Todos</option>
+                        <option value="Pendiente"      {% if filtro_estado == 'Pendiente'      %}selected{% endif %}>Pendiente</option>
+                        <option value="Revisada"       {% if filtro_estado == 'Revisada'       %}selected{% endif %}>Revisada</option>
+                        <option value="Falso positivo" {% if filtro_estado == 'Falso positivo' %}selected{% endif %}>Falso positivo</option>
+                    </select>
+                </div>
+                {% with por_enlace=extra_activos|sin_control %}{% if por_enlace %}
+                <p class="filtros-ocultos">También aplicados (llegan por enlace, sin desplegable):
+                    {% for f in por_enlace %}<span class="etiqueta">{{ f.campo }}: {{ f.valor }}</span>{% endfor %}
+                    · «Restablecer» los quita.</p>
+                {% endif %}{% endwith %}
+            </div>
+            {# Grupo final: ordenar + más filtros + filtrar + restablecer nunca se separan al pasar a otra fila. #}
+            <div class="filtros-final">
+                <div class="campo campo-orden">
+                    <label for="f-orden">Ordenar por</label>
+                    <select id="f-orden" name="orden">
+                        <option value="-timestamp" {% if filtro_orden == '-timestamp' %}selected{% endif %}>Fecha ↓</option>
+                        <option value="timestamp"  {% if filtro_orden == 'timestamp'  %}selected{% endif %}>Fecha ↑</option>
+                        <option value="-severidad" {% if filtro_orden == '-severidad' %}selected{% endif %}>Severidad ↓</option>
+                        <option value="severidad"  {% if filtro_orden == 'severidad'  %}selected{% endif %}>Severidad ↑</option>
+                        <option value="-riesgo_ia" {% if filtro_orden == '-riesgo_ia' %}selected{% endif %}>Riesgo ↓</option>
+                        <option value="riesgo_ia"  {% if filtro_orden == 'riesgo_ia'  %}selected{% endif %}>Riesgo ↑</option>
+                        <option value="estado"     {% if filtro_orden == 'estado'     %}selected{% endif %}>Estado</option>
+                    </select>
+                </div>
+                {# Filtros válidos sin control visible: se conservan al volver a filtrar. #}
+                {% if filtro_revision %}<input type="hidden" name="revision" value="{{ filtro_revision }}">{% endif %}
+                {% if filtro_severidad %}<input type="hidden" name="severidad" value="{{ filtro_severidad }}">{% endif %}
+                <button type="button" class="btn btn-mas-filtros" data-mas-filtros aria-controls="filtros-mas" aria-expanded="true"
+                        title="Análisis, motivo de omisión, estado triage{% if extra_activos %} ({{ extra_activos|length }} activo{{ extra_activos|length|pluralize }}){% endif %}">
+                    <span class="ico i-chevron-abajo" aria-hidden="true"></span>Más filtros{% if extra_activos %}<span class="mas-n">{{ extra_activos|length }}<span class="sr-only"> activo{{ extra_activos|length|pluralize }}</span></span>{% endif %}
+                </button>
+                <button type="submit" class="btn btn-primario"><span class="ico i-filtrar" aria-hidden="true"></span>Filtrar</button>
+                <a href="?" class="btn-icono" title="Restablecer filtros" aria-label="Restablecer filtros"><span class="ico i-cerrar" aria-hidden="true"></span></a>
+            </div>
+        </div>
+    </form>
 
-        {% for alert in alerts %}
-        <tr>
-            <td>{{ alert.descripcion }}</td>
-            <td>{{ alert.severidad }}</td>
-            <td>{{ alert.fuente }}</td>
-            <td>{{ alert.timestamp|default:alert.creado_en }}</td>
-            <td>{{ alert.riesgo_ia }}</td>
-            <td>{{ alert.explicacion_ia }}</td>
-        </tr>
-        {% endfor %}
-    </table>
+    <div class="espacio" id="espacio">
+        <section class="tabla-panel glass glass-suave" aria-label="Alertas">
+            <div class="tabla-scroll">
+            <table class="tabla">
+                <thead>
+                    <tr>
+                        <th scope="col">Evento</th>
+                        <th scope="col" class="c-activo">Activo</th>
+                        <th scope="col">Sev.</th>
+                        <th scope="col" class="c-fecha">Fecha</th>
+                        <th scope="col" class="c-clas">Clasificación IA</th>
+                        <th scope="col">Riesgo IA</th>
+                        <th scope="col" class="c-expl">Explicación IA</th>
+                        <th scope="col" class="c-rev">Revisión Analista</th>
+                        <th scope="col" class="c-acc"><span class="c-acc-txt">Acciones</span></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for alert in page_obj %}
+                    {% with fam=alert|familia_evento r=alert.riesgo_ia|lower %}
+                    <tr class="fila est-{% if alert.analisis_legado %}legado{% elif alert.analisis_fallido %}fallido{% elif alert.omitido_por_politica %}omitido{% elif alert.veredicto_efectivo == 'REQUIERE_ATENCION' %}atencion{% elif alert.veredicto_efectivo == 'FALSO_POSITIVO' %}fp{% else %}pendiente{% endif %}"
+                        id="fila-{{ alert.id }}" data-alerta="{{ alert.id }}">
+                        <td class="c-evento">
+                            <div class="evento">
+                                <span class="ev-ico" title="Familia del evento: {{ fam.etiqueta }}"><span class="ico i-ev-{{ fam.icono }}" aria-hidden="true"></span></span>
+                                <button type="button" class="fila-abrir" data-abrir="{{ alert.id }}" aria-controls="panel-detalle" aria-expanded="false"
+                                        aria-label="Ver detalle de la alerta {{ alert.id }}: {{ alert.descripcion|truncatechars:80 }}">
+                                    <span class="ev-desc">{{ alert.descripcion }}</span>
+                                    <span class="ev-fam">#{{ alert.id }} · {{ fam.etiqueta }}</span>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="c-activo">
+                            {% if alert.activo_logico %}
+                            <span class="activo-id">{{ alert.activo_logico.identificador }}</span>
+                            <span class="activo-meta">{{ alert.activo_logico.get_tipo_activo_display }} · {{ alert.activo_logico.get_criticidad_display }} · {{ alert.activo_logico.get_os_family_display }}</span>
+                            {% else %}<span class="sin-dato">sin activo</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if alert.severidad %}
+                            <span class="sev {% if alert.severidad >= 12 %}sev-alta{% elif alert.severidad >= 7 %}sev-media{% else %}sev-baja{% endif %}" title="Severidad Wazuh (nivel original)">{{ alert.severidad }}</span>
+                            {% else %}<span class="sin-dato">—</span>{% endif %}
+                        </td>
+                        <td class="c-fecha">{{ alert.timestamp|default:alert.creado_en }}</td>
+                        <td class="c-clas">{% include "dashboard/_clasificacion_alerta.html" %}</td>
+                        <td>
+                            {% if alert.analisis_legado %}
+                                <span class="riesgo r-nd">{{ alert.riesgo_ia|default:"—" }}</span>{% if alert.riesgo_ia %}<span class="tag-legado">legado</span>{% endif %}
+                            {% elif r == 'critical' or r == 'high' or r == 'medium' or r == 'low' %}
+                                <span class="riesgo r-{{ r }}">{{ alert.riesgo_ia }}</span>
+                            {% else %}
+                                <span class="riesgo r-nd">{{ alert.riesgo_ia|default:"—" }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="c-expl">
+                            {% if alert.analisis_legado and alert.explicacion_ia %}<span class="tag-legado">legado</span>{% endif %}
+                            {% if alert.explicacion_ia %}
+                                {% if alert.explicacion_ia|length > 120 %}
+                                    <span id="preview-{{ alert.id }}">{{ alert.explicacion_ia|slice:":120" }}&hellip;</span>
+                                    <span id="full-{{ alert.id }}" hidden>{{ alert.explicacion_ia }}</span>
+                                    <br><button type="button" class="razon-btn" data-razon="{{ alert.id }}" aria-expanded="false" aria-controls="full-{{ alert.id }}">ver más</button>
+                                {% else %}
+                                    <span>{{ alert.explicacion_ia }}</span>
+                                {% endif %}
+                            {% else %}<span class="sin-dato">—</span>{% endif %}
+                        </td>
+                        <td class="rev c-rev">{% include "dashboard/_revision_alerta.html" %}</td>
+                        <td class="c-acc">{% include "dashboard/_acciones_alerta.html" with pref="f" %}</td>
+                    </tr>
+                    <template id="det-{{ alert.id }}">{% include "dashboard/_detalle_alerta.html" %}</template>
+                    {% endwith %}
+                    {% empty %}
+                    <tr>
+                        <td colspan="9">
+                            <div class="vacio"><span class="ico i-buscar" aria-hidden="true"></span><p>No hay alertas con los filtros aplicados.</p></div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            </div>
 
-    {% if not alerts %}
-    <div class="empty-message">
-        No alerts available yet.
+            <div class="tabla-pie">
+                <span>{{ page_obj.paginator.count }} resultado{{ page_obj.paginator.count|pluralize:"s" }} · Página {{ page_obj.number }} de {{ page_obj.paginator.num_pages }}</span>
+                {% if page_obj.paginator.num_pages > 1 %}
+                <nav class="paginacion" aria-label="Paginación">
+                    {% if page_obj.has_previous %}
+                        <a href="?{{ query_string }}&page=1" class="pg" aria-label="Primera página">«</a>
+                        <a href="?{{ query_string }}&page={{ page_obj.previous_page_number }}" class="pg" aria-label="Página anterior">‹</a>
+                    {% else %}
+                        <span class="pg inactiva" aria-hidden="true">«</span>
+                        <span class="pg inactiva" aria-hidden="true">‹</span>
+                    {% endif %}
+                    {% for num in page_obj.paginator.page_range %}
+                        {% if page_obj.number == num %}
+                            <span class="pg activa" aria-current="page">{{ num }}</span>
+                        {% elif num >= page_obj.number|add:"-3" and num <= page_obj.number|add:"3" %}
+                            <a href="?{{ query_string }}&page={{ num }}" class="pg">{{ num }}</a>
+                        {% endif %}
+                    {% endfor %}
+                    {% if page_obj.has_next %}
+                        <a href="?{{ query_string }}&page={{ page_obj.next_page_number }}" class="pg" aria-label="Página siguiente">›</a>
+                        <a href="?{{ query_string }}&page={{ page_obj.paginator.num_pages }}" class="pg" aria-label="Última página">»</a>
+                    {% else %}
+                        <span class="pg inactiva" aria-hidden="true">›</span>
+                        <span class="pg inactiva" aria-hidden="true">»</span>
+                    {% endif %}
+                    <span>{{ page_obj.start_index }}–{{ page_obj.end_index }} de {{ page_obj.paginator.count }}</span>
+                </nav>
+                {% endif %}
+                <span class="prov">Proveedor IA: <span class="etiqueta">{{ proveedor_activo }}</span></span>
+            </div>
+        </section>
     </div>
-    {% endif %}
-
-</body>
-</html>
-
+</section>
+{% endblock %}
+{% block panel %}
+<aside class="panel-detalle glass glass-fuerte" id="panel-detalle" aria-label="Detalle del análisis" hidden>
+    <div class="pd-contenido" id="pd-contenido"></div>
+</aside>
+{% endblock %}

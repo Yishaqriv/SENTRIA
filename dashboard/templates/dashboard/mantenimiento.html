@@ -1,0 +1,110 @@
+{% extends "sentria/base_app.html" %}
+{% load dashboard_extras %}
+{% block titulo %}Ventanas de mantenimiento{% endblock %}
+{% block content %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Ventanas de mantenimiento</h1>
+    <p class="subtitulo">Mantenimientos autorizados por activo lógico. Solo la categoría y el alcance llegan al modelo.</p></div>
+</header>
+
+    {% if puede_gestionar %}
+    <div class="card glass">
+        <h2>Declarar un mantenimiento autorizado</h2>
+        <form method="POST">
+            {% csrf_token %}
+            <div class="form-grid">
+                <div class="fg">
+                    <label>Activo lógico</label>
+                    <select name="activo_logico" required>
+                        <option value="">— elige —</option>
+                        {% for a in activos %}<option value="{{ a.id }}">{{ a.identificador }} · {{ a.nombre_visible }} ({{ a.zona_horaria }})</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Categoría</label>
+                    <select name="categoria" required>
+                        {% for val, txt in categorias %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Alcance de la operación autorizada</label>
+                    <select name="alcance_operacion" required>
+                        <option value="">— elige —</option>
+                        {% for val, txt in alcances %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+                    </select>
+                </div>
+                <div class="fg">
+                    <label>Inicio (hora local del activo)</label>
+                    <input type="datetime-local" name="inicio" required>
+                </div>
+                <div class="fg">
+                    <label>Fin (hora local del activo)</label>
+                    <input type="datetime-local" name="fin" required>
+                </div>
+                <div class="fg" style="grid-column: 1 / -1;">
+                    <label>Descripción breve (opcional — no se envía al modelo de IA)</label>
+                    <input type="text" name="descripcion" maxlength="280" placeholder="p. ej. actualización de paquetes programada">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primario">Crear ventana</button>
+            <div class="note">
+                El fin debe ser posterior al inicio. No se permiten solapamientos de ventanas activas sobre el mismo activo.
+                Declárala <b>antes</b> de la operación: una ventana registrada después no autoriza eventos anteriores.
+                Al modelo solo llegan la categoría y el alcance (nunca la descripción).
+                Estar dentro de una ventana <b>no</b> convierte una alerta en falso positivo automáticamente.
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
+    <div class="card glass">
+        <h2>Ventanas registradas</h2>
+        <div class="note">Inicio y fin se muestran en la zona horaria de cada activo (p. ej. <b>America/Bogota</b> para SRV-01). Internamente se almacenan en UTC.</div>
+        <div class="table-wrap">
+        <table class="tabla-simple">
+            <thead>
+                <tr>
+                    <th>Activo</th><th>Categoría</th><th>Alcance</th>
+                    <th>Inicio (hora local del activo)</th><th>Fin (hora local del activo)</th><th>Estado</th>
+                    <th>Creada por</th>{% if puede_gestionar %}<th></th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for v in ventanas %}
+                <tr>
+                    <td>{{ v.activo_logico.identificador }}<br>
+                        <span class="activo-meta">{{ v.activo_logico.zona_horaria }}</span></td>
+                    <td>{{ v.get_categoria_display }}</td>
+                    <td>{{ v.get_alcance_operacion_display }}</td>
+                    <td>{{ v.inicio|en_zona:v.activo_logico.zona_horaria }}</td>
+                    <td>{{ v.fin|en_zona:v.activo_logico.zona_horaria }}</td>
+                    <td>
+                        {% if v.estado == 'ACTIVA' %}<span class="pill p-activa">Activa</span>
+                            {% if v.inicio <= ahora and v.fin >= ahora %}<span class="pill p-vigente">vigente ahora</span>{% endif %}
+                        {% else %}<span class="pill p-cancelada">Cancelada</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if v.creada_por %}{{ v.creada_por.username }}{% else %}—{% endif %}
+                        {% if v.estado == 'CANCELADA' %}<br><span class="activo-meta">canc. {{ v.cancelada_en|en_zona:v.activo_logico.zona_horaria }}{% if v.cancelada_por %} · {{ v.cancelada_por.username }}{% endif %}</span>{% endif %}
+                    </td>
+                    {% if puede_gestionar %}
+                    <td>
+                        {% if v.estado == 'ACTIVA' %}
+                        <form method="POST" action="{% url 'mantenimiento_cancelar' v.id %}" onsubmit="return confirm('¿Cancelar esta ventana de mantenimiento? Se conserva para auditoría.');">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-peligro">Cancelar</button>
+                        </form>
+                        {% endif %}
+                    </td>
+                    {% endif %}
+                </tr>
+                {% empty %}
+                <tr><td colspan="8"><div class="empty">No hay ventanas de mantenimiento registradas.</div></td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

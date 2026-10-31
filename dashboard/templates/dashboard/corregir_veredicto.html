@@ -1,0 +1,79 @@
+{% extends "sentria/base_app.html" %}
+{% load dashboard_extras %}
+{% block titulo %}Corregir clasificación IA{% endblock %}
+{% block content %}
+<div class="pagina formulario-estrecho">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Corregir clasificación de la IA</h1></div>
+    <a href="{% url 'index' %}" class="btn">Volver</a>
+</header>
+  <div class="card glass">
+    <h2>Alerta #{{ alerta.id }}</h2>
+    <p class="sub">La corrección es opcional y motivada. La clasificación original de la IA se conserva sin cambios.</p>
+
+
+    <div class="box">
+        <h3>Alerta</h3>
+        {{ alerta.descripcion|truncatechars:200 }}<br>
+        <b>Severidad Wazuh:</b> {{ alerta.severidad|default:"—" }}
+        {% if alerta.activo_logico %} &nbsp;·&nbsp; <b>Activo:</b> {{ alerta.activo_logico.identificador }} ({{ alerta.activo_logico.get_criticidad_display }}){% endif %}
+    </div>
+
+    <div class="box">
+        <h3>Clasificación automática de la IA</h3>
+        {% if alerta.veredicto_ia == 'REQUIERE_ATENCION' %}<span class="pill p-at">Requiere atención</span>
+        {% elif alerta.veredicto_ia == 'FALSO_POSITIVO' %}<span class="pill p-fp">Falso positivo</span>
+        {% else %}—{% endif %}
+        &nbsp;·&nbsp; <b>Riesgo:</b> {{ alerta.riesgo_ia|default:"—" }}
+        {% if alerta.tiene_correccion_humana %}<br><b>Corrección vigente:</b> {{ alerta.get_correccion_veredicto_display }}{% endif %}
+        {% if alerta.explicacion_ia %}<br><br>{{ alerta.explicacion_ia }}{% endif %}
+    </div>
+
+    {% if alerta.factores_cvss %}
+    <div class="box cvss">
+        <h3>CVSS v3 (en español)</h3>
+        {% for k, v in alerta.factores_cvss.items %}
+        <span><b>{{ k|cvss_es }}:</b> <span class="{% if v == 'no_determinado' %}nd{% endif %}">{{ v }}</span></span>
+        {% endfor %}
+        {% if alerta.justificacion_cvss %}<div style="margin-top:8px;">{{ alerta.justificacion_cvss }}</div>{% endif %}
+    </div>
+    {% endif %}
+
+    {% if alerta.recomendacion_ia %}
+    <div class="box"><h3>Recomendación</h3>{{ alerta.recomendacion_ia }}</div>
+    {% endif %}
+
+    <form method="POST">
+        {% csrf_token %}
+        <input type="hidden" name="origen" value="{{ origen_param }}">
+        <div class="box">
+            <h3>Corrección de la clasificación <span class="req">*</span></h3>
+            <div class="opts">
+                <label><input type="radio" name="correccion_veredicto" value="REQUIERE_ATENCION"> Requiere atención</label>
+                <label><input type="radio" name="correccion_veredicto" value="FALSO_POSITIVO"> Falso positivo</label>
+            </div>
+
+            <label class="fld">Categoría del motivo <span class="req">*</span></label>
+            <select name="motivo_categoria" required>
+                <option value="">— elige —</option>
+                {% for val, txt in motivos %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+            </select>
+
+            <label class="fld">Riesgo revisado (opcional)</label>
+            <select name="riesgo_revisado">
+                <option value="">(sin revisar aún)</option>
+                {% for val, txt in riesgos %}<option value="{{ val }}">{{ txt }}</option>{% endfor %}
+            </select>
+
+            <label class="fld">Nota (opcional)</label>
+            <textarea name="nota" rows="3"
+                      placeholder="Sólo si la categoría no basta. No hace falta una explicación extensa."></textarea>
+        </div>
+        <div class="btn-row">
+            <a href="{% url 'index' %}" class="btn">Cancelar</a>
+            <button type="submit" class="btn btn-primario">Registrar corrección</button>
+        </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

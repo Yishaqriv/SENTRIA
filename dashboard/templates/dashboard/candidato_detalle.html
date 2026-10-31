@@ -1,0 +1,151 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Candidato {{ cand.ejemplo_id }}{% endblock %}
+{% block content %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Candidato <code>{{ cand.ejemplo_id }}</code></h1>
+        <div class="pilas" style="margin-top:8px;"><span class="pill st-{{ cand.estado }}">{{ cand.get_estado_display }}</span>
+        {% if cand.estado == 'APROBADO' %}<span class="pill st-APROBADO"><span class="ico i-completado" aria-hidden="true"></span>Dataset aprobado</span>{% endif %}</div></div>
+    <div class="acciones-globales">
+        {% if cand.estado != 'APROBADO' %}
+        <form method="post">
+            {% csrf_token %}
+            <button type="submit" name="accion" value="sincronizar" class="btn"
+                    title="Recalcula el diagnóstico del candidato. Abrir esta página no modifica nada."><span class="ico i-actualizar" aria-hidden="true"></span>Sincronizar</button>
+        </form>
+        {% endif %}
+        <a href="{% url 'bandeja_dataset' %}" class="btn">Volver a la bandeja</a>
+    </div>
+</header>
+
+    <div class="card glass ro">
+        <h2>1 · Entrada anonimizada que recibió la IA</h2>
+        <p class="sub">Solo lectura. Contexto y evidencia técnica de la capa E, ya congelada. Nunca contiene datos privados.</p>
+        <pre>{{ entrada_json }}</pre>
+    </div>
+
+    <div class="card glass ro">
+        <h2>2 · Respuesta original de Gemini</h2>
+        <p class="sub">Solo lectura. Nunca modificable — es el registro de lo que dijo el modelo.</p>
+        <pre>{{ original_json }}</pre>
+    </div>
+
+    <div class="card glass">
+        <h2>3 · Salida objetivo supervisada</h2>
+        {% if cand.estado == 'APROBADO' %}
+        <p class="sub">
+            <b>Dataset aprobado — inmutable.</b> La salida supervisada, el snapshot de entrada y la aprobación
+            quedan congelados. No se admiten nuevas ediciones ni confirmaciones/correcciones de esta alerta.
+            Cualquier retiro posterior debe hacerse como una exclusión explícita y auditada (abajo).
+        </p>
+        <pre>{% if salida %}verdict: {{ salida.verdict }}
+risk: {{ salida.risk }}
+explanation_es: {{ salida.explanation_es }}
+cvss_reasoning_es: {{ salida.cvss_reasoning_es }}
+recommendation_es: {{ salida.recommendation_es }}
+missing_evidence: {{ missing_evidence_text }}{% endif %}</pre>
+        {% else %}
+        <p class="sub">
+            Prellenada desde la salida original. El <b>verdict está bloqueado</b> a la verdad de terreno humana.
+            No hay que copiar la alerta ni escribir JSON a mano.
+        </p>
+
+        {% if not errores_revision %}
+        <p class="note ok">La salida cumple todos los requisitos para pasar a revisión.</p>
+        {% else %}
+        <div class="note">Para enviar a segunda revisión falta:</div>
+        <ul class="err">{% for e in errores_revision %}<li>{{ e }}</li>{% endfor %}</ul>
+        {% endif %}
+
+        <form method="POST">
+            {% csrf_token %}
+            <label class="fld">verdict (bloqueado a la verdad de terreno)</label>
+            <span class="locked">{{ verdad_terreno|default:"— sin verdad de terreno —" }}</span>
+
+            <label class="fld">risk</label>
+            <select name="risk">
+                {% for r in riesgos %}<option value="{{ r }}" {% if salida.risk == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+            </select>
+
+            <label class="fld">explanation_es (20–600, en español)</label>
+            <textarea name="explanation_es">{{ salida.explanation_es }}</textarea>
+
+            <label class="fld">cvss_factors (8 factores)</label>
+            <div class="cvss-grid">
+                {% for row in cvss_rows %}
+                <div>
+                    <label class="fld" style="margin-top:0;">{{ row.clave }}</label>
+                    <select name="cvss__{{ row.clave }}">
+                        {% for op in row.opciones %}<option value="{{ op }}" {% if row.valor == op %}selected{% endif %}>{{ op }}</option>{% endfor %}
+                    </select>
+                </div>
+                {% endfor %}
+            </div>
+
+            <label class="fld">cvss_reasoning_es (20–800)</label>
+            <textarea name="cvss_reasoning_es">{{ salida.cvss_reasoning_es }}</textarea>
+
+            <label class="fld">recommendation_es (10–500, en español)</label>
+            <textarea name="recommendation_es">{{ salida.recommendation_es }}</textarea>
+
+            <label class="fld">missing_evidence (una por línea, 0–10)</label>
+            <textarea name="missing_evidence">{{ missing_evidence_text }}</textarea>
+
+            <div class="chk">
+                <input type="checkbox" name="confirmo_revision" id="cr" {% if cand.salida_objetivo_revisada %}checked{% endif %}>
+                <label for="cr">Confirmo que revisé <b>riesgo, explicación, CVSS, recomendación y evidencia faltante</b>.</label>
+            </div>
+
+            <div class="btn-row">
+                <button type="submit" name="accion" value="borrador" class="btn">Guardar borrador</button>
+                <button type="submit" name="accion" value="enviar" class="btn btn-primario">Enviar a segunda revisión</button>
+            </div>
+            <p class="note">Aprobar no es automático. El envío exige contrato JSON válido, coherencia con la verdad de terreno, privacidad OK, sin duplicado y la confirmación de arriba.</p>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if puede_segunda_revision %}
+    <div class="card glass">
+        <h2>Segunda revisión</h2>
+        {% if solo_exclusion %}
+        <p class="sub" style="color:#ffd08a;">
+            Este candidato está <b>APROBADO</b>: es inmutable. La única acción admitida es una
+            <b>exclusión explícita y auditada</b> (requiere observaciones).
+        </p>
+        {% elif es_completador %}
+        <p class="sub" style="color:#ffd08a;">Tú completaste este borrador: <b>no puedes hacer la aprobación final</b>. Debe revisarlo otro ADMIN/ANALISTA.</p>
+        {% else %}
+        <p class="sub">Revisa la salida objetivo y decide. Se conserva autor, fecha, decisión y observaciones. No se borran revisiones anteriores.</p>
+        {% endif %}
+        <form method="POST">
+            {% csrf_token %}
+            <input type="hidden" name="accion" value="revisar">
+            <label class="fld">Observaciones (obligatorias para devolver o excluir)</label>
+            <textarea name="observaciones"></textarea>
+            <div class="btn-row">
+                {% if not solo_exclusion %}
+                <button type="submit" name="decision" value="APROBADO" class="btn btn-exito"
+                        {% if es_completador %}disabled{% endif %}>Aprobar</button>
+                <button type="submit" name="decision" value="DEVUELTO" class="btn btn-aviso">Devolver con observaciones</button>
+                {% endif %}
+                <button type="submit" name="decision" value="EXCLUIDO" class="btn btn-peligro">Excluir</button>
+            </div>
+        </form>
+    </div>
+    {% endif %}
+
+    <div class="card glass">
+        <h2>Historial de revisiones del candidato</h2>
+        {% for r in revisiones %}
+        <div class="aud"><b>{{ r.get_decision_display }}</b> · {{ r.creada_en|date:"Y-m-d H:i" }} ·
+            {{ r.autor.username|default:"—" }}{% if r.observaciones %} · «{{ r.observaciones }}»{% endif %}</div>
+        {% empty %}
+        <div class="note">Sin revisiones todavía.</div>
+        {% endfor %}
+        {% if cand.completado_por %}
+        <div class="note">Borrador completado por <b>{{ cand.completado_por.username }}</b> el {{ cand.completado_en|date:"Y-m-d H:i" }}.</div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

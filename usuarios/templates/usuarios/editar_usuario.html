@@ -1,20 +1,40 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <title>Editar usuario | SENTRIA</title>
-</head>
-<body>
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Editar usuario{% endblock %}
+{% block content %}<div class="pagina formulario-estrecho">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Editar usuario</h1></div>
+    <a href="{% url 'lista_usuarios' %}" class="btn">Volver</a>
+</header>
+    <div class="card glass">
+        <h2>Editar cuenta</h2>
+        <p class="sub">Modificando: <strong>{{ usuario.username }}</strong></p>
 
-<h1>Editar usuario: {{ usuario.username }}</h1>
+        <form method="POST">
+            {% csrf_token %}
 
-<form method="POST">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit">Actualizar</button>
-</form>
+            {% for field in form %}
+            <div class="form-group">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {% if field.field.widget.input_type == 'checkbox' %}
+                    <div class="checkbox-row">
+                        {{ field }}
+                        <span>{{ field.label }}</span>
+                    </div>
+                {% else %}
+                    {{ field }}
+                {% endif %}
+                {% if field.errors %}
+                    <ul class="errorlist">
+                        {% for error in field.errors %}
+                            <li>{{ error }}</li>
+                        {% endfor %}
+                    </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
 
-<a href="{% url 'lista_usuarios' %}">Volver</a>
-
-</body>
-</html>
+            <button type="submit" class="btn btn-primario">Guardar cambios</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

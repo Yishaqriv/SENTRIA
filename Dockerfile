@@ -1,0 +1,43 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DJANGO_DEBUG=False
+
+WORKDIR /app
+
+# mysqlclient necesita headers de MySQL/MariaDB y un compilador para construirse.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        default-libmysqlclient-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+# Estáticos recopilados al construir (WhiteNoise los sirve con DEBUG=False). Se usa la
+# configuración de prueba, sin secretos ni conexiones: hereda de settings.py la misma
+# STATIC_ROOT y el mismo almacenamiento que usa la aplicación al ejecutarse.
+RUN DJANGO_SETTINGS_MODULE=sentria_project.settings_prueba_docker \
+    python manage.py collectstatic --noinput
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && useradd --system --uid 10001 --no-create-home sentria \
+    && chown -R sentria /app
+# Sin privilegios de root dentro del contenedor.
+USER sentria
+
+EXPOSE 8000
+
+# Toda la configuración (SECRET_KEY, DB, Wazuh, Gemini) se pasa por variables de
+# entorno en tiempo de ejecución (docker run --env-file .env / docker-compose),
+# nunca se hornea en la imagen. Ver .env.example para las variables requeridas.
+# DEBUG queda desactivado por defecto. Las migraciones solo se aplican al arrancar
+# con SENTRIA_MIGRAR_AL_ARRANCAR=1 (ver docker-entrypoint.sh).
+ENTRYPOINT ["docker-entrypoint.sh"]
+# Sin socket de control de gunicorn (gestión en caliente con gunicornc): en el contenedor no se usa y,
+# con un usuario sin directorio personal, intentaría crearlo en $HOME y fallaría.
+CMD ["gunicorn", "sentria_project.wsgi:application", "--bind", "0.0.0.0:8000", "--no-control-socket"]
