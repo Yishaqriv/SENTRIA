@@ -19,3 +19,9 @@ staticfiles/
 # %LOCALAPPDATA%\SENTRIA\manifiestos_fim, nunca en el repo; esto es una red de seguridad).
 manifiestos_fim/
 fim_*.json
+
+# Configuración y seguimiento privados; la plantilla de ejemplo se publica.
+.env.*
+!.env.example
+*.env
+seguimiento-local/
