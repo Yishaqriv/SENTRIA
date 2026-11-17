@@ -1,0 +1,57 @@
+{
+ "alert_description_es": "Acceso HTTP requiere autenticacion o fue denegado: tomcat, respuesta 401. No confirma un ataque.",
+ "asset_criticality": "media",
+ "asset_os_family": "windows",
+ "asset_os_role": "servidor",
+ "asset_type": "servidor_interno",
+ "authorized_context_es": "Activo SINTÉTICO de ejemplo para pruebas automáticas. Servidor Windows de laboratorio con un servicio web de demostración. No describe ningún equipo real.",
+ "evidencia_tecnica": {
+  "correlated_events": "no_determinado",
+  "file_extension": "no_aplica",
+  "fim_event_type": "no_aplica",
+  "hash_present": false,
+  "path_category": "no_aplica",
+  "process_category": "no_determinado",
+  "rule_groups": [
+   "sentria_web",
+   "web",
+   "accesslog"
+  ],
+  "rule_id": "119602",
+  "size_info": "no_aplica",
+  "telemetry_source": "wazuh_acceso_web",
+  "user_role_category": "no_determinado",
+  "web_bytes_respuesta": 1000,
+  "web_clase_estado": "4xx",
+  "web_clase_ruta": "authentication_route",
+  "web_con_query": "no",
+  "web_estado_http": "401",
+  "web_metodo_http": "GET",
+  "web_procedencia": "no_determinado",
+  "web_servicio": "tomcat"
+ },
+ "maintenance_category": "no_aplica",
+ "maintenance_scope": "no_aplica",
+ "maintenance_scope_match": "no_aplica",
+ "maintenance_window": "sin_ventana_declarada",
+ "observed_cvss_factors": {
+  "attack_complexity": "no_determinado",
+  "attack_vector": "no_determinado",
+  "availability_impact": "no_determinado",
+  "confidentiality_impact": "no_determinado",
+  "integrity_impact": "no_determinado",
+  "privileges_required": "no_determinado",
+  "scope": "no_determinado",
+  "user_interaction": "no_determinado"
+ },
+ "operational_window": "dentro_horario_operativo",
+ "schema_version": "1.4",
+ "technical_evidence_es": "Regla de Wazuh nivel 5 (sentria_web, web, accesslog). Caso sintético de prueba: servicio tomcat, método GET, respuesta HTTP 401 (4xx), clase de ruta authentication_route, sin parámetros de consulta, 1000 bytes. Un código HTTP por sí solo no confirma un ataque.",
+ "wazuh_level": 5,
+ "wazuh_rule_groups": [
+  "sentria_web",
+  "web",
+  "accesslog"
+ ],
+ "wazuh_rule_id": "119602"
+}

@@ -26,6 +26,15 @@ ENTRADA 1.2 — campos OPCIONALES solo para eventos Windows de los canales Appli
 ENTRADA 1.4 — campos OPCIONALES solo para Security 4719 / 6416:
   win_auditoria_subcategoria (tabla cerrada de GUID oficiales), win_auditoria_cambio (lista o "no_determinado"),
   win_dispositivo_clase (clase de instalación pública; HIDClass/USB nunca se traducen a «teclado»)
+ACCESO WEB (recolector SENTRIA, esquema 1) — campos OPCIONALES solo para eventos web:
+  web_servicio, web_metodo_http, web_estado_http, web_clase_estado, web_bytes_respuesta, web_clase_ruta,
+  web_con_query (presencia, nunca el valor), web_procedencia (en_vivo / historico_reproducido / no_determinado).
+  La hora original del acceso solo se usa para el horario y la ventana (prompt.hora_del_evento) y se conserva en
+  `_diagnostico_tiempo`; no va en el texto.
+  Compatibilidad: extensión OPCIONAL `sentria_web_v1` (WEB_EXTRACTOR_VERSION) sobre la entrada 1.4, sin cambiar
+  `schema_version` ni los snapshots existentes (los eventos no web no cambian). NO todo consumidor de 1.4 la acepta:
+  `entrada_exportacion` (exp-entrada-1, modelo ajustado) la rechaza como no representable antes de llamar, así que
+  ese adaptador queda fuera de una comparación web con entrada equivalente hasta ampliarlo deliberadamente.
 Todos son categorías cerradas o identificadores técnicos validados por patrón; nunca
 nombres de usuario/equipo, SIDs, rutas, comandos ni texto libre de la telemetría.
 
@@ -577,6 +586,39 @@ def evidencia_auditoria_dispositivo(win):
     return {}
 
 
+# ---------------------------------------------------------------------------
+# Acceso web (recolector SENTRIA, esquema 1)
+# ---------------------------------------------------------------------------
+WEB_EXTRACTOR_VERSION = "sentria_web_v1"
+_WEB_SERVICIOS = ("domjudge", "tomcat")
+_WEB_METODOS = ("GET", "POST", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE", "OTHER")
+_WEB_RUTAS = ("api", "authentication_route", "static_asset", "root", "other")
+_WEB_PROCEDENCIAS = ("en_vivo", "historico_reproducido")
+
+
+def evidencia_web(web):
+    """Acceso web ya filtrado por `sentria_backend._web_crudo` -> categorías cerradas, o {} si no es un acceso web
+    válido. Se revalida todo: un dict de otra procedencia nunca aporta texto libre. Un código HTTP no confirma
+    autenticación fallida ni ataque, y no se infiere correlación."""
+    if not isinstance(web, dict) or web.get("service") not in _WEB_SERVICIOS:
+        return {}
+    estado = str(web.get("http_status", ""))
+    if not re.fullmatch(r"[1-5][0-9]{2}", estado):
+        return {}
+    bytes_ = web.get("response_bytes")
+    bytes_ = bytes_ if isinstance(bytes_, int) and not isinstance(bytes_, bool) and 0 <= bytes_ < 10**18 \
+        else "no_determinado"
+    query = web.get("has_query")
+    return {"web_servicio": web["service"],
+            "web_metodo_http": web.get("http_method") if web.get("http_method") in _WEB_METODOS else "no_determinado",
+            "web_estado_http": estado, "web_clase_estado": estado[0] + "xx",
+            "web_bytes_respuesta": bytes_,
+            "web_clase_ruta": web.get("route_class") if web.get("route_class") in _WEB_RUTAS else "no_determinado",
+            "web_con_query": "si" if query is True else "no" if query is False else "no_determinado",
+            "web_procedencia": web.get("procedencia") if web.get("procedencia") in _WEB_PROCEDENCIAS
+            else "no_determinado"}
+
+
 def construir_evidencia_tecnica(alert):
     """
     `alert`: dict de una alerta Wazuh (claves planas proyectadas por
@@ -602,6 +644,9 @@ def construir_evidencia_tecnica(alert):
     dec = str(a.get("decoder_name") or "")
     if "syscheck" in dec:
         telemetry = "wazuh_syscheck"
+    web = evidencia_web(a.get("web"))
+    if web and not hay_fim:
+        telemetry = "wazuh_acceso_web"
 
     return {
         "fim_event_type": categoria_evento_fim(a.get("syscheck_event")) if hay_fim else "no_aplica",
@@ -624,4 +669,6 @@ def construir_evidencia_tecnica(alert):
         **evidencia_evento_windows(a.get("win")),
         # Entrada 1.4: SOLO Security 4719 / 6416
         **evidencia_auditoria_dispositivo(a.get("win")),
+        # Acceso web: SOLO eventos del recolector SENTRIA
+        **web,
     }

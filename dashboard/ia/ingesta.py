@@ -16,6 +16,8 @@ from django.utils import timezone
 from dashboard.models import Alert
 
 from .analizador import analizar_alerta
+from . import exclusion
+from .exclusion import AnalisisEnCursoError, AnalisisInciertoError, clave_de_fila, exclusion_analisis
 from .persistencia import aplicar_omision, aplicar_resultado
 from .politica import cargar_politica, evaluar_elegibilidad
 from .prompt import _grupos_lista, _nivel_int
@@ -89,7 +91,10 @@ def es_prueba_controlada(alerta):
     return isinstance(snap, dict) and "_experimento" in snap
 
 
-def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, procedencia=None):
+YA_EXISTENTE = "ya_existente"
+
+
+def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, procedencia=None, solo_nueva=False):
     """
     Procesa UNA alerta cruda. Devuelve (Alert, accion) con accion en
     {'duplicada','omitida','analizada','fallida'} para una alerta NUEVA, o
@@ -97,13 +102,29 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, proc
     no COMPLETED se reprocesa (dedup que NO impide la recuperación explícita).
     Aísla su propio fallo. `procedencia` (solo alertas NUEVAS de una prueba controlada) se guarda en el snapshot
     como `_experimento`; una alerta existente nunca la recibe.
+
+    Exclusión común (`exclusion`): todo el camino (existencia, creación, recuperación y llamada) se ejecuta con la
+    exclusión del `opensearch_id`. Si otra vía analiza ese documento -> `AnalisisEnCursoError` (sin fila nueva, sin
+    tocar la existente, sin llamada). `solo_nueva=True` (trabajador continuo): si la fila ya existe, se devuelve
+    (existente, 'ya_existente') sin modificarla ni llamar; la comprobación ocurre DENTRO de la exclusión.
+    Llamada sin cerrar (marca persistente de `exclusion`): si una llamada anterior de este documento pudo
+    ejecutarse y no quedó cerrada -> `AnalisisInciertoError` antes de tocar nada (requiere revisión).
     """
     politica = politica or cargar_politica()
+    with exclusion_analisis(alert.get("opensearch_id")):
+        exclusion.comprobar_no_incierto(alert.get("opensearch_id"))
+        return _ingestar_alerta(alert, resolver=resolver, politica=politica, proveedor=proveedor,
+                                procedencia=procedencia, solo_nueva=solo_nueva)
+
+
+def _ingestar_alerta(alert, *, resolver, politica, proveedor, procedencia, solo_nueva):
     opensearch_id = alert.get("opensearch_id")
 
     if opensearch_id:
         existente = Alert.objects.filter(opensearch_id=opensearch_id).first()
         if existente is not None:
+            if solo_nueva:
+                return existente, YA_EXISTENTE
             if procedencia is not None:     # una prueba controlada solo analiza alertas nuevas
                 raise ValueError("procedencia de prueba controlada sobre una alerta ya existente")
             if es_prueba_controlada(existente):     # sin reintentos: no se toca la fila ni se llama al modelo
@@ -117,8 +138,10 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, proc
             # datos históricos) y se re-evalúa con la política y las
             # asignaciones vigentes.
             _enriquecer_procedencia(existente, alert)
-            accion = reanalizar_alerta(
-                existente, politica=politica, proveedor=proveedor, resolver=resolver
+            # La evidencia técnica recién leída de Wazuh (FIM, SCA, Windows, web) sustituye a la reconstruida
+            # desde la fila, que solo conserva descripción, nivel y grupos: no se pierde al recuperar.
+            accion = _reanalizar_alerta(     # ya dentro de la exclusión de este opensearch_id: sin anidar
+                existente, politica=politica, proveedor=proveedor, resolver=resolver, alert_override=alert
             )
             return existente, f"recuperada:{accion}"
 
@@ -150,6 +173,8 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, proc
             aplicar_omision(obj, decision.motivo_omision)
         return obj, "omitida"
 
+    # Marca duradera ANTES del análisis que puede llamar; se retira solo con el resultado (o el fallo) ya guardado.
+    marca = exclusion.abrir_llamada(opensearch_id or f"pk:{obj.pk}", "ingesta", alert_id=obj.pk)
     try:
         resultado = analizar_alerta(alert, activo, proveedor=proveedor, procedencia=procedencia)
         with transaction.atomic():
@@ -162,8 +187,10 @@ def ingestar_alerta(alert, *, resolver=None, politica=None, proveedor=None, proc
                 obj.explicacion_ia = f"Error de ingesta: {type(e).__name__}: {e}"
                 obj.analizado_en = timezone.now()
                 obj.save()
+        exclusion.cerrar_llamada(marca)
         return obj, "fallida"
 
+    exclusion.cerrar_llamada(marca)
     return obj, ("analizada" if resultado["estado_analisis"] == "COMPLETED" else "fallida")
 
 
@@ -171,7 +198,8 @@ def ingestar_lote(alertas, *, resolver=None, politica=None, proveedor=None):
     """Procesa una lista de alertas crudas. El fallo de una NO detiene el resto."""
     politica = politica or cargar_politica()
     c = {"total": 0, "nuevas": 0, "duplicadas": 0, "recuperadas": 0,
-         "omitidas": 0, "analizadas": 0, "fallidas": 0, "bloqueadas_experimento": 0}
+         "omitidas": 0, "analizadas": 0, "fallidas": 0, "bloqueadas_experimento": 0, "en_curso": 0,
+         "requieren_revision": 0}
     _plural = {"analizada": "analizadas", "omitida": "omitidas", "fallida": "fallidas",
                "completed_sin_cambios": "duplicadas"}
     for alert in alertas:
@@ -180,6 +208,12 @@ def ingestar_lote(alertas, *, resolver=None, politica=None, proveedor=None):
             _obj, accion = ingestar_alerta(
                 alert, resolver=resolver, politica=politica, proveedor=proveedor
             )
+        except AnalisisEnCursoError:        # otra vía (p. ej. el trabajador continuo) la está analizando
+            c["en_curso"] += 1
+            continue
+        except AnalisisInciertoError:       # llamada anterior sin cerrar: requiere revisión, no se reenvía
+            c["requieren_revision"] += 1
+            continue
         except Exception:
             c["nuevas"] += 1
             c["fallidas"] += 1
@@ -207,10 +241,25 @@ _CAMPOS_EVIDENCIA_OVERRIDE = (
     "syscheck_size_after", "syscheck_hash_present", "syscheck_uid_after",
     "syscheck_uname_after", "syscheck_perm_after", "syscheck_process_name",
     "sca", "cuenta_linux", "win",          # entrada 1.1 (3F.8)
+    "web",                                 # acceso web (recolector SENTRIA)
 )
 
 
 def reanalizar_alerta(alerta, *, politica=None, proveedor=None, resolver=None, alert_override=None):
+    """
+    Punto de entrada PÚBLICO del reanálisis (reintento individual, reclasificación por lote): adquiere la exclusión
+    común de la alerta, vuelve a leer la fila (otra vía pudo completarla mientras tanto) y aplica las mismas
+    guardas. Si otra vía la está analizando -> `AnalisisEnCursoError`, sin llamada ni cambios.
+    """
+    with exclusion_analisis(clave_de_fila(alerta)):
+        exclusion.comprobar_no_incierto(clave_de_fila(alerta))     # antes de leer o tocar la fila
+        if alerta.pk is not None:
+            alerta.refresh_from_db()
+        return _reanalizar_alerta(alerta, politica=politica, proveedor=proveedor, resolver=resolver,
+                                  alert_override=alert_override)
+
+
+def _reanalizar_alerta(alerta, *, politica=None, proveedor=None, resolver=None, alert_override=None):
     """
     Re-analiza una alerta EXISTENTE en ANALISIS_FALLIDO / PENDING /
     OMITIDO_POLITICA / sin estado (legacy).
@@ -252,6 +301,8 @@ def reanalizar_alerta(alerta, *, politica=None, proveedor=None, resolver=None, a
         aplicar_omision(alerta, decision.motivo_omision)
         return "omitida"
 
+    marca = exclusion.abrir_llamada(clave_de_fila(alerta), "reanalisis", alert_id=alerta.pk)
     resultado = analizar_alerta(alert_dict, activo, proveedor=proveedor)
     aplicar_resultado(alerta, resultado)
+    exclusion.cerrar_llamada(marca)        # solo con el resultado ya guardado; una excepción deja la marca
     return "analizada" if resultado["estado_analisis"] == "COMPLETED" else "fallida"

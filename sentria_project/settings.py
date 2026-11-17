@@ -202,3 +202,5 @@ SENTRIA_MODO_REVISION = os.environ.get('SENTRIA_MODO_REVISION', 'DOBLE').strip()
 
 # Overrides opcionales de la política de elegibilidad (dashboard/ia/politica.py).
 # IA_POLITICA = {"nivel_minimo": 7, "grupos_excluidos": [...], ...}
+# 2026-11-12: mínimo bajado de 7 a 5; las demás opciones mantienen su valor por defecto.
+IA_POLITICA = {"nivel_minimo": 5}

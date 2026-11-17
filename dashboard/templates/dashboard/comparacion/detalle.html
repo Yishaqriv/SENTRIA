@@ -1,0 +1,99 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Ejecución de comparación{% endblock %}
+{% block content %}
+{% include "dashboard/comparacion/_estilos.html" %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Ejecución · {{ e.caso.codigo }}</h1>
+    <p class="subtitulo">{{ e.proveedor }} · {{ e.modelo_informado|default:"modelo no informado" }} · {{ estado }}</p></div>
+    <a class="btn" href="{% url 'comparacion' %}">Volver</a>
+</header>
+
+<div class="card glass">
+    <h2>Resumen</h2>
+    {% if e.origen_medicion != "observada_local" %}<div class="warn">Medición reportada por un participante o por el paquete:
+        se comprobó que el archivo no se alteró, pero esta instancia no la observó.</div>{% endif %}
+    <dl class="cmp-def">
+        <dt>Caso</dt><dd>{{ e.caso.codigo }} · {{ e.caso.get_procedencia_display }}{% if not e.caso.procedencia_asignada_en %} <span class="nchip">procedencia deducida de la evidencia</span>{% endif %}</dd>
+        <dt>Origen de la medición</dt><dd>{{ e.get_origen_medicion_display }}{% if e.participante %} · {{ e.participante }}{% endif %}</dd>
+        <dt>Proveedor</dt><dd>{{ e.proveedor }}</dd>
+        <dt>Modelo pedido</dt><dd>{{ e.modelo_solicitado|default:"No disponible" }}</dd>
+        <dt>Modelo que respondió</dt><dd>{{ e.modelo_informado|default:"No disponible" }}</dd>
+        <dt>Fecha (UTC)</dt><dd>{% if e.inicio_utc %}{{ e.inicio_utc|date:"Y-m-d H:i:s" }}{% else %}No disponible{% endif %}</dd>
+        <dt>Repetición</dt><dd>{{ e.repeticion|default:"No disponible" }}</dd>
+        <dt>Condiciones</dt><dd>{{ equivalencia_texto }}</dd>
+        <dt>Resultado</dt><dd>{{ estado }}</dd>
+        <dt>Clasificación de la IA</dt><dd>{% if e.veredicto %}{{ veredicto_texto }} · riesgo {{ riesgo_texto|default:"No disponible" }} <span class="cmp-nd">(respuesta del modelo, no verdad de terreno)</span>{% else %}No disponible{% endif %}</dd>
+        {% if e.categoria_error %}<dt>Motivo del fallo</dt><dd>{{ e.categoria_error }}</dd>{% endif %}
+    </dl>
+</div>
+
+<div class="card glass">
+    <h2>Tiempos y tokens</h2>
+    <dl class="cmp-def">
+        <dt>Latencia del proveedor</dt><dd>{% if e.latencia_proveedor_s is None %}No disponible{% else %}{{ e.latencia_proveedor_s }} s{% endif %}
+            <span class="cmp-nd">— desde que se envía el caso hasta que el proveedor responde</span></dd>
+        <dt>Duración del análisis</dt><dd>{% if e.duracion_analisis_s is None %}No disponible{% else %}{{ e.duracion_analisis_s }} s{% endif %}
+            <span class="cmp-nd">— latencia más la preparación y la validación de SENTRIA</span></dd>
+        <dt>Duración de la ejecución</dt><dd>{% if e.duracion_ejecucion_s is None %}No disponible{% else %}{{ e.duracion_ejecucion_s }} s{% endif %}
+            <span class="cmp-nd">— proceso completo del ejecutor independiente</span></dd>
+        <dt>Tokens de entrada</dt><dd>{% if e.tokens_entrada is None %}No disponible{% else %}{{ e.tokens_entrada }}{% endif %} <span class="cmp-nd">— texto enviado</span></dd>
+        <dt>Tokens de salida</dt><dd>{% if e.tokens_salida is None %}No disponible{% else %}{{ e.tokens_salida }}{% endif %} <span class="cmp-nd">— texto generado</span></dd>
+        <dt>Tokens de razonamiento</dt><dd>{% if e.tokens_razonamiento is None %}No disponible{% else %}{{ e.tokens_razonamiento }}{% endif %} <span class="cmp-nd">— no se suman a la salida ni al total</span></dd>
+        <dt>Tokens totales</dt><dd>{% if e.tokens_total is None %}No disponible{% else %}{{ e.tokens_total }}{% endif %} <span class="cmp-nd">— {{ tokens_fuente_texto|lower }}</span></dd>
+    </dl>
+</div>
+
+<div class="card glass">
+    <details class="pd-sec">
+        <summary>Ver respuesta de la IA</summary>
+        <div class="pd-sec-cuerpo">
+        {% if e.respuesta_observada %}<pre class="cmp-pre">{{ e.respuesta_observada }}</pre>
+        {% else %}<p class="note">No disponible en esta instancia (no se guardó o se omitió por privacidad al exportar).</p>{% endif %}
+        {% if e.observaciones %}<p class="note">Observaciones: {{ e.observaciones }}</p>{% endif %}
+        </div>
+    </details>
+    <details class="pd-sec">
+        <summary>Ver detalles técnicos</summary>
+        <div class="pd-sec-cuerpo">
+        <dl class="cmp-def">
+            <dt>Identificador (UUID)</dt><dd class="cmp-mono">{{ f.uuid }}</dd>
+            <dt>Identidad</dt><dd>{% if e.identidad_derivada %}derivada de una línea antigua sin UUID: no demuestra si es la misma ejecución que otra con igual respuesta{% else %}UUID propio de la ejecución{% endif %}</dd>
+            <dt>Condiciones (protocolo)</dt><dd class="cmp-mono">{{ protocolo.0 }} · {{ e.equivalencia }}</dd>
+            <dt>Formato de entrada</dt><dd>{{ e.caso.formato_entrada }}</dd>
+            <dt>Huella de la entrada</dt><dd class="cmp-mono">{{ e.caso.entrada_sha256 }}</dd>
+            <dt>Formato de salida usado</dt><dd class="cmp-mono">{{ e.esquema_efectivo_sha256|default:"no declarado" }}</dd>
+            <dt>Formato de salida de referencia</dt><dd class="cmp-mono">{{ e.caso.esquema_sha256|default:"No disponible" }}</dd>
+            <dt>Huella del contexto</dt><dd class="cmp-mono">{{ e.caso.contexto_sha256|default:"No disponible" }}</dd>
+            <dt>Clave del caso</dt><dd class="cmp-mono">{{ e.caso.clave }}</dd>
+            <dt>Código del paquete base</dt><dd class="cmp-mono">{{ e.codigo_base_sha256|default:"No registrada" }}</dd>
+            <dt>Código ejecutado</dt><dd class="cmp-mono">{{ e.codigo_ejecucion_sha256|default:"No registrada" }}</dd>
+            <dt>Adaptador</dt><dd class="cmp-mono">{{ e.adaptador_sha256|default:"No registrada" }}</dd>
+            <dt>Texto enviado</dt><dd class="cmp-mono">{{ e.texto_enviado_sha256|default:"No registrada" }}</dd>
+            <dt>Respuesta</dt><dd class="cmp-mono">{{ e.respuesta_sha256|default:"No registrada" }}</dd>
+            <dt>Contenido de la medición</dt><dd class="cmp-mono">{{ e.huella_contenido }}</dd>
+            <dt>Cómo se midió el tiempo</dt><dd>{{ e.definicion_tiempo|default:"No disponible" }}</dd>
+            <dt>Origen de los tokens</dt><dd>{{ tokens_fuente_texto }}</dd>
+            <dt>Estado de la llamada / análisis</dt><dd>{{ e.get_estado_llamada_display }} / {{ analisis_texto }}</dd>
+            <dt>Motivo sin llamada</dt><dd>{{ e.motivo_sin_llamada|default:"No aplica" }}</dd>
+            <dt>Finalización / código HTTP</dt><dd>{{ e.finish_reason|default:"No disponible" }} / {{ e.codigo_http|default:"No disponible" }}</dd>
+            {% if e.lote %}<dt>Importado en</dt><dd class="cmp-mono">{{ e.lote.archivo_nombre }} · {{ e.lote.archivo_sha256 }}</dd>{% endif %}
+            {% if vinculada_localmente %}<dt>Trazabilidad</dt><dd>Vinculada a un análisis de esta instancia (privado; no se exporta).</dd>{% endif %}
+        </dl>
+        {% if parametros %}<p class="pd-sub-titulo">Parámetros</p><pre class="cmp-pre">{{ parametros }}</pre>{% endif %}
+        </div>
+    </details>
+    <details class="pd-sec">
+        <summary>Corregir la procedencia del caso</summary>
+        <div class="pd-sec-cuerpo">
+        <form method="POST" action="{% url 'comparacion_procedencia' e.caso.clave %}" class="cmp-acciones">{% csrf_token %}
+            <input type="hidden" name="volver" value="{{ request.path }}">
+            <div class="fg"><label for="p-proc">Procedencia</label>
+                <select id="p-proc" name="procedencia">{% for v, t in procedencias %}<option value="{{ v }}"{% if e.caso.procedencia == v %} selected{% endif %}>{{ t }}</option>{% endfor %}</select></div>
+            <button type="submit" class="btn">Guardar</button>
+        </form>
+        </div>
+    </details>
+</div>
+</div>
+{% endblock %}

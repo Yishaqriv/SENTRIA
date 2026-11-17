@@ -5,18 +5,27 @@ Una prueba acotada del flujo automático:
   Wazuh (solo lectura, un único agente) → política (nivel + ruido) →
   Gemini (gemini_developer, con TOPE ABSOLUTO de llamadas) → veredicto automático.
 
-Uso:
-  python manage.py ingestar_alertas --agent-id 000 --limit 3 --dry-run
-  python manage.py ingestar_alertas --agent-id 000 --limit 3 --confirmar
+Uso (por lotes; exactamente uno de --dry-run o --confirmar):
+  python manage.py ingestar_alertas --agent-id 000 --max-analisis 3 --dry-run
+  python manage.py ingestar_alertas --agent-id 000 --max-analisis 3 --confirmar
+
+Uso (dirigido, una alerta por su `_id` de OpenSearch; exige --confirmar y no
+admite --dry-run):
+  python manage.py ingestar_alertas --agent-id 000 --opensearch-id <_id> --confirmar
 
 Reglas duras:
-  - `--limit` se recorta a LIMITE_ABSOLUTO (3). Nunca más de 3 análisis / 3
-    llamadas reales a Gemini.
+  - `--max-analisis` (por defecto 3) se recorta a MAX_ANALISIS_ABS (3), con un
+    aviso: nunca más de 3 análisis / 3 llamadas reales al modelo por ejecución.
+    `--scan-limit` (por defecto 100) se recorta a SCAN_LIMIT_MAX (500).
+  - La ingesta dirigida (`--opensearch-id`) tiene un tope de 1 llamada real y no
+    se combina con las opciones del piloto. Solo dentro de una prueba
+    controlada (`--registro-experimento`) admite `--dry-run` (sección final).
   - Un único `--agent-id`, que debe tener una asignación activa a un
     `ActivoLogico`. Ningún otro agente se procesa.
   - No se recorren las alertas históricas: sólo las que devuelve la lectura de
     Wazuh para ese agente.
-  - `--dry-run` no llama a Gemini ni escribe en MySQL (sólo lee para deduplicar).
+  - `--dry-run` (por lotes) no llama a Gemini ni escribe en MySQL (sólo lee
+    para deduplicar).
   - Salida = conteos y categorías sanitizadas. Nunca prompts, respuestas crudas
     ni contenido sensible.
   - `--proveedor vertex_tuned` (lotes o dirigido): configuración y credenciales
@@ -40,6 +49,20 @@ Piloto acotado (registro persistente, ver dashboard/ia/piloto.py):
     el modelo; si ya se envió (intento registrado o fila del proveedor en MySQL)
     o ya apareció en esta ejecución, la alerta no se envía ni consume intento
     (con --confirmar queda un evento `duplicada` en el registro).
+
+Prueba controlada (registro propio, ver dashboard/ia/piloto.py):
+  python manage.py ingestar_alertas --agent-id 001 --iniciar-experimento \\
+      --registro-experimento /ruta/privada/experimento.jsonl --experimento <id> \\
+      --sesion-experimento <INICIO>,<FIN> --reglas-experimento <rule.id,...> --plan-sello <sha256>
+  python manage.py ingestar_alertas --agent-id 001 --opensearch-id <_id> \\
+      --registro-experimento /ruta/privada/experimento.jsonl \\
+      --reserva /ruta/privada/reserva.json --reserva-sello <sha256> \\
+      --wazuh-tls-sha256 <sha256> --dry-run | --confirmar
+  - --iniciar-experimento crea el registro y termina (sin Wazuh ni modelo; no
+    admite --dry-run ni --confirmar).
+  - Con --opensearch-id, exactamente uno de --dry-run o --confirmar; --dry-run
+    hace las mismas comprobaciones (incluida la lectura de Wazuh) sin llamar al
+    modelo ni escribir.
 """
 import hashlib
 import os
@@ -92,7 +115,8 @@ class _ProveedorContado(proveedores.ProveedorIA):
         self.nombre = inner.nombre
         self.llamadas = 0
         # Capacidades del proveedor real que el analizador consulta (formato de entrada y validaciones extra).
-        for atributo in ("formato_entrada", "valida_privacidad_salida", "valida_sustento_impactos", "_modelo"):
+        for atributo in ("formato_entrada", "valida_privacidad_salida", "valida_sustento_impactos", "_modelo",
+                         "parametros_medicion"):
             if hasattr(inner, atributo):
                 setattr(self, atributo, getattr(inner, atributo))
 

@@ -1,0 +1,53 @@
+{
+ "alert_description_es": "Windows System error event",
+ "asset_criticality": "media",
+ "asset_os_family": "windows",
+ "asset_os_role": "servidor",
+ "asset_type": "servidor_interno",
+ "authorized_context_es": "Activo SINTÉTICO de ejemplo para pruebas automáticas. Servidor Windows de laboratorio con un servicio web de demostración. No describe ningún equipo real.",
+ "evidencia_tecnica": {
+  "correlated_events": "no_determinado",
+  "file_extension": "no_aplica",
+  "fim_event_type": "no_aplica",
+  "hash_present": false,
+  "path_category": "no_aplica",
+  "process_category": "no_determinado",
+  "rule_groups": [
+   "windows",
+   "windows_system",
+   "system_error"
+  ],
+  "rule_id": "61102",
+  "size_info": "no_aplica",
+  "telemetry_source": "wazuh_agent",
+  "user_role_category": "no_determinado",
+  "win_canal": "sistema",
+  "win_id_evento": "7023",
+  "win_proveedor": "no_determinado",
+  "win_proveedor_categoria": "no_catalogado"
+ },
+ "maintenance_category": "no_aplica",
+ "maintenance_scope": "no_aplica",
+ "maintenance_scope_match": "no_aplica",
+ "maintenance_window": "sin_ventana_declarada",
+ "observed_cvss_factors": {
+  "attack_complexity": "no_determinado",
+  "attack_vector": "no_determinado",
+  "availability_impact": "no_determinado",
+  "confidentiality_impact": "no_determinado",
+  "integrity_impact": "no_determinado",
+  "privileges_required": "no_determinado",
+  "scope": "no_determinado",
+  "user_interaction": "no_determinado"
+ },
+ "operational_window": "dentro_horario_operativo",
+ "schema_version": "1.4",
+ "technical_evidence_es": "Regla de Wazuh nivel 5 (windows, windows_system, system_error). Caso sintético de prueba. Telemetría: wazuh_agent.",
+ "wazuh_level": 5,
+ "wazuh_rule_groups": [
+  "windows",
+  "windows_system",
+  "system_error"
+ ],
+ "wazuh_rule_id": "61102"
+}

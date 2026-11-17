@@ -1,0 +1,59 @@
+{
+ "conjunto": "SENTRIA-PILOTO-COMP v3",
+ "manifiesto_sha256": "08b501a10bcbdef00dacf7155a487bf95ac69e1b9c9f4f2fd7e6202d365af639",
+ "casos": 74,
+ "entradas_distintas": 74,
+ "por_procedencia": {
+  "web_historico_reproducido": 65,
+  "windows_natural": 6,
+  "diagnostico_agente": 2,
+  "web_natural": 1
+ },
+ "por_servicio_web": {
+  "tomcat": 35,
+  "domjudge": 31,
+  "no_web": 8
+ },
+ "por_regla": {
+  "119602 (nivel 5)": 43,
+  "119603 (nivel 5)": 23,
+  "61102 (nivel 5)": 2,
+  "60776 (nivel 7)": 1,
+  "60775 (nivel 5)": 1,
+  "60122 (nivel 5)": 1,
+  "60702 (nivel 5)": 1,
+  "202 (nivel 7)": 1,
+  "203 (nivel 9)": 1
+ },
+ "por_estado_http": {
+  "401": 23,
+  "403": 20,
+  "500": 17,
+  "no_web": 8,
+  "501": 4,
+  "504": 1,
+  "502": 1
+ },
+ "grupos_ignorando_el_valor_de_bytes": 35,
+ "grupos_con_mas_de_un_caso": [
+  10,
+  9,
+  7,
+  4,
+  4,
+  4,
+  3,
+  3,
+  3,
+  2
+ ],
+ "grupos_distinguiendo_bytes_desconocidos": 36,
+ "casos_con_respuesta_de_referencia_de_gemini": 10,
+ "advertencias": [
+  "74 entradas distintas no son 74 escenarios independientes: 49 casos caen en 10 grupos que solo difieren en el tamaño de la respuesta.",
+  "Ningún caso está confirmado como ataque; un código HTTP 401, 403 o 5xx por sí solo no indica un ataque.",
+  "Los históricos usan el perfil actual del activo; no prueban autorización ni mantenimiento en la fecha histórica.",
+  "Las respuestas de referencia son observaciones de un proveedor, no respuestas correctas ni etiquetas."
+ ],
+ "no_incluye": "las entradas, los contextos, las respuestas ni los identificadores de los casos"
+}

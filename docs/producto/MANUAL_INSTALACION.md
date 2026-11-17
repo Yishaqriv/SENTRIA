@@ -1,7 +1,7 @@
-# Manual de instalación de SENTRIA (versión `6d8c6b5`)
+# Manual de instalación de SENTRIA
 
 
-Se contrastó con el árbol versionado de `6d8c6b5` y con los registros del laboratorio. Para escribirlo no se instaló, no se ejecutó ni se arrancó nada.
+Describe el código de `6d8c6b5` con los cambios de noviembre de 2026 ([`CHANGELOG.md`](../../CHANGELOG.md)). Se contrastó con ese árbol y con los registros del laboratorio. Para actualizarlo no se instaló ni se arrancó nada; la suite se ejecutó sobre una copia aislada ([`docs/validacion/PRUEBAS_CANDIDATO.md`](../validacion/PRUEBAS_CANDIDATO.md)).
 
 **Cómo leer las marcas:**
 - **[C]**: comprobado en ejecución en el laboratorio, con la evidencia indicada.
@@ -31,7 +31,7 @@ En el laboratorio funcionó de dos formas:
 
 ## 2. Qué contiene el repositorio
 
-El código es el de `6d8c6b5`, comprobado con `git ls-files` **[C]**. La documentación se añadió en un commit posterior, sin cambios funcionales:
+El código es el de `6d8c6b5` más los cambios de noviembre de 2026; los archivos de código coinciden por huella con los que ejecuta la máquina virtual del laboratorio (comprobado el 16 nov 2026), salvo el encabezado de `ingestar_alertas.py` (solo documentación) y `settings_ci.py` (solo pruebas), corregidos al preparar la publicación **[C]**. Contenido:
 
 | Incluido en el repositorio | Para qué |
 |---|---|
@@ -42,10 +42,15 @@ El código es el de `6d8c6b5`, comprobado con `git ls-files` **[C]**. La documen
 | `requirements.txt`, `Dockerfile`, `docker-entrypoint.sh`, `.dockerignore` | Dependencias e imagen |
 | `scripts/laboratorio_windows/generar_eventos_fim.ps1` | Script que generó eventos de integridad de archivos en Windows |
 | `README.md`, `CHANGELOG.md` y `docs/producto/` | Descripción general, cambios por versión, configuración y manuales |
+| `docs/validacion/` | Índice de evidencias publicables y sus agregados |
+| `despliegue/systemd/` | Unidades de ejemplo para la ingesta continua |
+| `wazuh/reglas/` | Reglas de Wazuh para los accesos web |
+| `experimentos/comparacion/` | Ejecutor independiente de la comparación de proveedores, con casos sintéticos; no se usa para operar |
+| `.github/workflows/pruebas.yml` | Integración continua: suite sin claves ni servicios reales |
 
 **No incluido:**
 - **`.env`:** está en `.gitignore` y `.dockerignore`, y así debe ser, porque lleva secretos.
-- **Lanzador y unidad de la VM:** el lanzador del servicio (`lanzar_dashboard_vm.py`), la unidad `sentria-dashboard.service` y sus comprobaciones son archivos privados del laboratorio, fuera del repositorio: la instalación A se describe aquí con órdenes genéricas.
+- **Lanzador y unidades de la VM:** el lanzador del servicio (`lanzar_dashboard_vm.py`), las unidades `sentria-dashboard.service` y de la ingesta continua y sus comprobaciones son archivos privados del laboratorio, fuera del repositorio: la instalación A se describe aquí con órdenes genéricas.
 - **Scripts del PC:** volúmenes, importación de credenciales, túnel SSH y lanzadores de análisis son archivos privados del laboratorio, fuera del repositorio. La instalación B se describe con órdenes genéricas equivalentes.
 
 Todas las variables que lee el código, con su valor por defecto, están en [CONFIGURACION.md](CONFIGURACION.md).
@@ -57,7 +62,7 @@ Todas las variables que lee el código, con su valor por defecto, están en [CON
 | Wazuh | 4.14.5 (servidor, indexador y panel). Para instalarlo todo en un servidor, la documentación pide 4 vCPU, 8 GiB de RAM y 50 GB para hasta 25 agentes, según la documentación de Wazuh | [C] versión. La VM tenía unos 7,8 GB de RAM (registro del 7 sep) [F: CPU y disco] |
 | Cuenta del indexador | De solo lectura sobre `wazuh-alerts-*`. En el laboratorio tenía los roles `own_index` y `sentria_reader_role` | [C] 7 sep: `_count` y `_search` sobre `wazuh-alerts-*` respondieron 200, y `/`, `/_cluster/health`, `/.opensearch-security/_search`, `_cat/indices` y `wazuh-alerts-*/_mapping`, 403. 12 oct: `_count` 200 y `_cat/indices` 403. **No se probaron otras rutas ni permisos.** [F] cómo se creó el rol |
 | Python | 3.12 (la imagen usa `python:3.12-slim`; la VM, 3.12.3) | [C] |
-| Dependencias | `requirements.txt`. `mysqlclient` necesita las cabeceras de MySQL o MariaDB, `pkg-config` y un compilador | [C] en la imagen. [F] en la VM no consta que el entorno se instalara exactamente desde este archivo |
+| Dependencias | `requirements.txt`. `mysqlclient` necesita las cabeceras de MySQL o MariaDB, `pkg-config` y un compilador. Matplotlib y sus dependencias solo sirven para las gráficas de «Comparación de IA» | [C] en la imagen de `6d8c6b5`, sin Matplotlib. [C] Matplotlib 3.11.2 instalado en el entorno de la VM el 13 nov 2026. [F] en la VM no consta que el entorno se instalara exactamente desde este archivo |
 | MySQL | Una base y un usuario con permisos sobre ella | [C] la del director, por un túnel TCP de ngrok. [F] versión del servidor |
 | Gemini | Clave de la API y nombre del modelo | [C] |
 | Vertex AI (opcional) | Endpoint del modelo ajustado y credenciales de Google | [C] en ejecuciones de prueba |
@@ -109,7 +114,7 @@ Una huella distinta también puede indicar que la conexión no llega al servidor
 # 1. Obtener el código en la versión entregada
 git clone https://github.com/Yishaqriv/SENTRIA.git sentria
 cd sentria
-git checkout 6d8c6b5            # o la rama cierre/3e-windows-lab
+git checkout main               # o la etiqueta publicada de esta versión
 
 # 2. Dependencias del sistema para mysqlclient (Ubuntu; requiere sudo)
 sudo apt-get install -y python3-venv python3-dev build-essential default-libmysqlclient-dev pkg-config
@@ -143,11 +148,11 @@ export SENTRIA_ENV_FILE=<RUTA_CONFIG>/sentria.env
 
 | Paso | Estado |
 |---|---|
-| 1 | [C] la copia de trabajo del laboratorio está en `6d8c6b5` |
+| 1 | [C] la copia de trabajo del laboratorio está en `6d8c6b5` con los cambios de esta versión aún sin commit (mismos archivos de código, por huella, salvo esos dos) |
 | 2–3 | [D]; las dependencias del sistema salen del `Dockerfile` |
 | 4 | [C] archivo 600 fuera del repositorio y `SENTRIA_ENV_FILE` |
 | 5 | [C] |
-| 6 | [C] migraciones 0012 y 0013, el 7 oct, con respaldo nativo previo y prueba de restauración |
+| 6 | [C] migraciones 0012 y 0013, el 7 oct, con respaldo nativo previo y prueba de restauración; 0015 y 0016, el 13 nov, con respaldo previo |
 | 7 | [D]; [F] no hay registro de cómo se crearon las cuentas del laboratorio |
 | 8 | [D]: es lo que hace la imagen Docker al construirse (`Dockerfile`), y no se ejecutó fuera de ella. Con `runserver` y `DJANGO_DEBUG=True` no hace falta |
 | 9 | [D] con gunicorn. En el laboratorio, la VM usó `runserver` (ver abajo) |
@@ -157,7 +162,9 @@ export SENTRIA_ENV_FILE=<RUTA_CONFIG>/sentria.env
 2. arma un entorno mínimo en memoria (`SENTRIA_ENV_FILE`, `WAZUH_TLS_SHA256`, `DJANGO_ALLOWED_HOSTS` y `SENTRIA_MODO_REVISION`);
 3. ejecuta `manage.py runserver <IP>:8000 --noreload`.
 
-`runserver` es el servidor de desarrollo de Django y no se recomienda fuera de un laboratorio. El lanzador y la unidad no están en el repositorio (sección 2).
+`runserver` es el servidor de desarrollo de Django y no se recomienda fuera de un laboratorio. El lanzador y la unidad no están en el repositorio (sección 2). Desde noviembre de 2026 el lanzador también define `SENTRIA_EXCLUSION_DIR` y `MPLCONFIGDIR` ([CONFIGURACION.md](CONFIGURACION.md)).
+
+**Ingesta continua (opcional).** Definir `SENTRIA_EXCLUSION_DIR` igual para el dashboard y para el comando, probar con `--ensayo` y después instalar las unidades de [`despliegue/systemd/`](../../despliegue/systemd/). Detalle y límites en el [manual de administración](MANUAL_ADMINISTRACION.md), sección 4 bis. **[C]** en la VM con unidades privadas equivalentes; las unidades de ejemplo son **[D]**.
 
 **Verificar:** la página `/accounts/login/` responde 200, `/` redirige al inicio de sesión (302) y la hoja de estilos responde 200. **[C]** en la VM (script de comprobación del laboratorio). Con gunicorn y `DJANGO_DEBUG=False`, los estáticos los sirve WhiteNoise después del paso 8. **[D]** fuera de la imagen.
 
@@ -169,7 +176,7 @@ export SENTRIA_ENV_FILE=<RUTA_CONFIG>/sentria.env
 # 1. Código y construcción de la imagen
 git clone https://github.com/Yishaqriv/SENTRIA.git sentria
 cd sentria
-git checkout 6d8c6b5
+git checkout main               # o la etiqueta publicada de esta versión
 docker build -t sentria:<ETIQUETA> .
 
 # 2. Volúmenes: configuración del dashboard, secretos de los análisis y datos de los análisis
@@ -213,7 +220,7 @@ Qué espera la imagen **[D]** (`Dockerfile`, `docker-entrypoint.sh`):
 - **Arranque:** el entrypoint ejecuta `python manage.py check` y luego la orden pedida. Por defecto es gunicorn en el puerto 8000.
 - **Migraciones:** **no** las aplica, salvo con `-e SENTRIA_MIGRAR_AL_ARRANCAR=1`. Contra una base real se aplican de forma deliberada, después de un respaldo: `docker run --rm --user 10001 -e SENTRIA_ENV_FILE=... -v ... sentria:<ETIQUETA> python manage.py migrate`.
 
-Estado en el laboratorio:
+Estado en el laboratorio (todo con la imagen de `6d8c6b5`; **[F]** la imagen no se reconstruyó con los cambios de noviembre de 2026, que añaden Matplotlib y dos migraciones):
 - **[C]** construcción y prueba aislada (sin red, SQLite temporal, sin credenciales; `check`, inicio de sesión 200, estáticos y suite de 598 pruebas dentro del contenedor);
 - **[C]** traslado de la imagen con `docker save`, la huella del archivo, `docker load` y el Id;
 - **[C]** volúmenes con propietario 10001 y permisos 700;

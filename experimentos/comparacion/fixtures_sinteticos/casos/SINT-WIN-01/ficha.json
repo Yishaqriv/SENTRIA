@@ -1,0 +1,27 @@
+{
+ "archivos": {
+  "contexto_capa_e.json": {
+   "sha256": "35f94ed75524d4e3b68e5af1fb7bbe979ee4da15b171f87eedf4ae5ed8dc57c4"
+  },
+  "entrada.txt": {
+   "sha256": "ba817475405dbf053fae84ed0095983900cb37324fee88ac0ac0b1b9b6fddbb9"
+  },
+  "respuesta_referencia_gemini.json": {
+   "sha256": "10dde0f893aa4e70ac752893bf40aba3ebcaa192cfb49a66c4dcd3079841748e"
+  }
+ },
+ "caso": "SINT-WIN-01",
+ "codigo": {
+  "manifiesto_codigo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "descripcion": "Sintético: evento de sistema de Windows (regla 61102, nivel 5)",
+ "esquema_salida": {
+  "archivo": "../../esquema_salida.json",
+  "sha256_archivo": "c4000b6ac4cc12d16fd176e00b5afc8d82d1984a8d13205efe875252be5b44a5",
+  "sha256_canonico": "4c67891e7e608a4f564d580af6e916cc8eb1c3d701947d4fccd9b3bf546d78c2"
+ },
+ "estado_referencia": "sintetica",
+ "procedencia_conjunto": "no_determinada",
+ "tipo": "windows_sintetico",
+ "uso": "Caso sintético para pruebas automáticas: no es una alerta real ni una respuesta de un modelo."
+}

@@ -34,3 +34,15 @@ staticfiles/
 venv/
 .vscode/
 *.swp
+
+# --- Material privado del equipo y de asistentes ---
+.claude/
+CLAUDE.md
+AGENTS.md
+**/*.zip
+**/*.ova
+
+# --- No forman parte de la imagen: CI, documentación y herramientas del experimento ---
+.github/
+docs/
+experimentos/

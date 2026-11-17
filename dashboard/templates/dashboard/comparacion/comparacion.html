@@ -1,0 +1,304 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Comparación de IA{% endblock %}
+{% block content %}
+{% include "dashboard/comparacion/_estilos.html" %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Comparación de IA</h1>
+    <p class="subtitulo">Compara cómo responden distintos proveedores de IA a los mismos casos. Solo lo ve el superusuario.
+        Consultar, filtrar, importar o descargar no envía nada a la IA.</p></div>
+</header>
+
+<div class="card glass">
+    <h2>Resumen del conjunto</h2>
+    {% if not conjunto %}
+    <p class="note">Aún no hay un conjunto común congelado. Se crea al importar el documento del conjunto (paquete del equipo);
+        mientras tanto, usa el detalle por caso de más abajo.</p>
+    {% else %}
+    <p class="sub"><b>{{ conjunto.codigo }} v{{ conjunto.version }}</b> · {{ resumen.n_casos }} casos · piloto comparativo,
+        no es una muestra representativa ni mide exactitud. {{ conjunto.descripcion }}</p>
+    <form method="GET" action="{% url 'comparacion' %}" class="cmp-acciones">
+        <div class="fg"><label for="r-cj">Conjunto</label>
+            <select id="r-cj" name="conjunto">{% for v, t in conjuntos %}<option value="{{ v }}"{% if v == conjunto_id %} selected{% endif %}>{{ t }}</option>{% endfor %}</select></div>
+        <div class="fg"><label for="r-serie">Proveedor y modelo</label>
+            <select id="r-serie" name="serie"><option value="">Todos</option>
+            {% for f in filas_resumen %}<option value="{{ f.id }}"{% if request.GET.serie == f.id %} selected{% endif %}>{{ f.proveedor }} · {{ f.modelo }}</option>{% endfor %}</select></div>
+        <div class="fg"><label for="r-rep">Repeticiones</label>
+            <select id="r-rep" name="rep"><option value="todas"{% if resumen.repeticiones == "todas" %} selected{% endif %}>Todas</option>
+                <option value="primera"{% if resumen.repeticiones == "primera" %} selected{% endif %}>Solo la primera de cada caso</option></select></div>
+        <button type="submit" class="btn">Ver</button>
+    </form>
+    {% if resumen.pendiente_otro_proveedor %}
+    <div class="warn" style="margin-top:12px;"><b>Pendiente de resultados de otro proveedor.</b> Se muestran los datos
+        disponibles; todavía no hay comparación entre proveedores.</div>
+    {% endif %}
+    <div class="tabla-scroll" style="margin-top:12px;">
+    <table class="tabla">
+        <thead><tr><th>Proveedor · modelo</th><th>Casos con resultado</th><th>Tiempo por alerta (media · mediana)</th>
+            <th class="cmp-ocultable">Tokens por ejecución medida (entrada · salida · total)</th><th class="cmp-ocultable">Resultados</th></tr></thead>
+        <tbody>
+        {% for f in filas_resumen %}
+        <tr>
+            <td>{{ f.proveedor }} · {{ f.modelo }}{% if not f.comparable %}<br><span class="cmp-etq cmp-etq-aviso">{{ f.condiciones }}</span>{% endif %}</td>
+            <td>{{ f.cobertura }}{% if f.pendientes %} · {{ f.pendientes }} pendiente{{ f.pendientes|pluralize }}{% endif %}<br><span class="cmp-nd">{{ f.ejecuciones }} {% if f.ejecuciones == 1 %}ejecución{% else %}ejecuciones{% endif %}</span></td>
+            <td>{% if f.tiempo_media is None %}<span class="cmp-nd">No disponible</span>{% else %}{{ f.tiempo_media|floatformat:2 }} s · {{ f.tiempo_mediana|floatformat:2 }} s{% endif %}<br><span class="cmp-nd">{{ f.tiempo_cobertura }}</span></td>
+            <td class="cmp-ocultable">{% for n, prom, tot, med, total_ej in f.tokens %}{% if prom is None %}{{ n }}: No disponible{% else %}{{ n }}: {{ prom|floatformat:0 }} (total {{ tot }}){% endif %}{% if not forloop.last %} · {% endif %}{% endfor %}<br><span class="cmp-nd">{% with t=f.tokens.2 %}{{ t.3 }} de {{ t.4 }} ejecuciones con dato{% endwith %}</span></td>
+            <td class="cmp-ocultable">{{ f.resultados }}</td>
+        </tr>
+        {% empty %}<tr><td colspan="5">El conjunto aún no tiene ejecuciones.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% if resumen.comparacion %}
+    <h3 style="margin-top:16px;">Comparación sobre los {{ resumen.comparacion.n_casos_comunes }} casos comunes</h3>
+    <div class="tabla-scroll"><table class="tabla">
+        <thead><tr><th>Proveedor · modelo</th><th>Tiempo por caso (media · mediana)</th><th>Tokens entrada · salida · total (media por caso)</th></tr></thead>
+        <tbody>{% for c in resumen.comparacion.series %}<tr><td>{{ c.proveedor }} · {{ c.modelo }}</td>
+            <td>{% if c.tiempo_media_por_caso is None %}No disponible{% else %}{{ c.tiempo_media_por_caso|floatformat:2 }} s · {{ c.tiempo_mediana_por_caso|floatformat:2 }} s{% endif %}{% if c.casos_sin_tiempo %} <span class="cmp-nd">({{ c.casos_sin_tiempo }} sin dato)</span>{% endif %}</td>
+            <td>{% if c.tokens_entrada.media_por_caso is None %}No disponible{% else %}{{ c.tokens_entrada.media_por_caso|floatformat:0 }}{% endif %} · {% if c.tokens_salida.media_por_caso is None %}No disponible{% else %}{{ c.tokens_salida.media_por_caso|floatformat:0 }}{% endif %} · {% if c.tokens_total.media_por_caso is None %}No disponible{% else %}{{ c.tokens_total.media_por_caso|floatformat:0 }}{% endif %}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% endif %}
+    {% if graficas_disponibles and resumen.comparables %}
+    <div class="cmp-figs" style="margin-top:14px;">
+        {% for t in tipos_resumen %}
+        <figure class="cmp-fig">
+            <figcaption class="cmp-fig-titulo">{% if t == "tiempo" %}Tiempo de respuesta por caso{% else %}Tokens por caso{% endif %}</figcaption>
+            <img src="{% url 'comparacion_resumen_grafica' t 'png' %}?{{ q_resumen }}&amp;vista=1" loading="lazy" alt="{% if t == 'tiempo' %}Tiempo{% else %}Tokens{% endif %} por caso del conjunto {{ conjunto.codigo }}">
+            <div class="descargas">
+                <a class="btn" href="{% url 'comparacion_resumen_grafica' t 'png' %}?{{ q_resumen }}">Imagen PNG</a>
+                <a class="btn" href="{% url 'comparacion_resumen_grafica' t 'svg' %}?{{ q_resumen }}">SVG</a>
+                <a class="btn" href="{% url 'comparacion_resumen_grafica' t 'pdf' %}?{{ q_resumen }}">PDF</a>
+            </div>
+        </figure>
+        {% endfor %}
+    </div>
+    {% endif %}
+    <div class="cmp-acciones" style="margin-top:12px;">
+        <a class="btn" href="{% url 'comparacion_resumen_datos' %}?{{ q_resumen }}">Datos del resumen (CSV)</a>
+        <a class="btn" href="{% url 'comparacion_resumen_ficha' %}?{{ q_resumen }}">Ficha técnica (JSON)</a>
+        <a class="btn" href="{% url 'comparacion_exportar_json' %}?conjunto={{ conjunto_id }}">Exportar el conjunto para otra instancia</a>
+    </div>
+    <details class="pd-sec cmp-ayuda">
+        <summary>Cómo se calcula</summary>
+        <div class="pd-sec-cuerpo"><p>{{ regla_agregacion }}</p>
+            <p class="note">Los tokens son el consumo que informa cada proveedor (sus tokenizadores pueden diferir): no son un coste ni una eficiencia equivalente. Aceptada/rechazada describe la validación de SENTRIA, no exactitud.</p></div>
+    </details>
+    <details class="pd-sec cmp-tecnico">
+        <summary>Ver detalles</summary>
+        <div class="pd-sec-cuerpo"><dl class="cmp-def">
+            <dt>Huella del manifiesto</dt><dd class="cmp-mono">{{ conjunto.manifiesto_sha256 }}</dd>
+            <dt>Series</dt><dd>{% for f in filas_resumen %}{{ f.proveedor }} · {{ f.modelo }} · <span class="cmp-mono">{{ f.protocolo }} · {{ f.equivalencia }}</span>{% if not forloop.last %}<br>{% endif %}{% endfor %}</dd>
+            <dt>Casos</dt><dd>{% for c in conjunto.casos_manifiesto %}{{ c.codigo }} · <span class="cmp-mono">{{ c.entrada_sha256 }}</span>{% if not forloop.last %}<br>{% endif %}{% endfor %}</dd>
+        </dl></div>
+    </details>
+    {% endif %}
+</div>
+
+<div class="card glass">
+    <h2>Todas las ejecuciones guardadas <span class="nchip">con los filtros actuales</span></h2>
+    <div class="kpis">
+        <div class="kpi"><div class="n">{{ n_total }}</div><div class="l">Ejecuciones guardadas</div></div>
+        <div class="kpi"><div class="n">{{ n_casos }}</div><div class="l">Casos distintos</div></div>
+        <div class="kpi"><div class="n">{{ n_proveedores }}</div><div class="l">Proveedores</div></div>
+        <div class="kpi"><div class="n">{{ n_importadas }}</div><div class="l">Traídas de otras instancias o del paquete</div></div>
+        <div class="kpi"><div class="n">{{ pendientes_locales }}</div><div class="l">Mediciones propias sin registrar</div></div>
+    </div>
+    {% if n_proveedores <= 1 %}
+    <div class="warn" style="margin-top:12px;"><b>Muestra inicial.</b> Con un solo proveedor no hay comparación ni ganador:
+        solo se describen las mediciones disponibles.</div>
+    {% endif %}
+    {% if truncado %}<p class="note">Se muestran las primeras 5000 ejecuciones: acota los filtros.</p>{% endif %}
+    <details class="pd-sec cmp-ayuda">
+        <summary>Cómo leer los tiempos y los tokens</summary>
+        <div class="pd-sec-cuerpo">
+            <dl class="cmp-def">{% for t, d in ayuda %}<dt>{{ t }}</dt><dd>{{ d }}</dd>{% endfor %}</dl>
+            <p class="note">Las respuestas de la IA no se toman como verdad: aquí no se calculan aciertos, falsos positivos ni costes.</p>
+        </div>
+    </details>
+</div>
+
+<div class="card glass">
+    <h2>Filtros</h2>
+    <form method="GET" action="{% url 'comparacion' %}">
+        <div class="form-grid">
+            <div class="fg"><label for="f-caso">Caso</label>
+                <select id="f-caso" name="caso"><option value="">Todos</option>
+                {% for clave, texto in casos %}<option value="{{ clave }}"{% if filtros.caso == clave %} selected{% endif %}>{{ texto }}</option>{% endfor %}
+                </select></div>
+            <div class="fg"><label for="f-prov">Proveedor</label>
+                <select id="f-prov" name="proveedor"><option value="">Todos</option>
+                {% for p in proveedores %}<option value="{{ p }}"{% if filtros.proveedor == p %} selected{% endif %}>{{ p }}</option>{% endfor %}
+                </select></div>
+            <div class="fg"><label for="f-modelo">Modelo</label>
+                <input id="f-modelo" type="text" name="modelo" value="{{ filtros.modelo|default:'' }}" maxlength="120" placeholder="nombre exacto"></div>
+            <div class="fg"><label for="f-proc">Procedencia</label>
+                <select id="f-proc" name="procedencia"><option value="">Todas</option>
+                {% for v, t in procedencias %}<option value="{{ v }}"{% if filtros.procedencia == v %} selected{% endif %}>{{ t }}</option>{% endfor %}
+                </select></div>
+            <div class="fg"><label for="f-origen">Origen de la medición</label>
+                <select id="f-origen" name="origen"><option value="">Todos</option>
+                {% for v, t in origenes %}<option value="{{ v }}"{% if filtros.origen == v %} selected{% endif %}>{{ t }}</option>{% endfor %}
+                </select></div>
+            <div class="fg"><label for="f-estado">Resultado</label>
+                <select id="f-estado" name="estado"><option value="">Todos</option>
+                {% for v, t in estados %}<option value="{{ v }}"{% if filtros.estado == v %} selected{% endif %}>{{ t }}</option>{% endfor %}
+                </select></div>
+            <div class="fg"><label for="f-desde">Desde</label><input id="f-desde" type="date" name="desde" value="{{ filtros.desde|default:'' }}"></div>
+            <div class="fg"><label for="f-hasta">Hasta</label><input id="f-hasta" type="date" name="hasta" value="{{ filtros.hasta|default:'' }}"></div>
+            <div class="fg"><label for="f-rep">Repetición</label><input id="f-rep" type="number" min="1" name="repeticion" value="{{ filtros.repeticion|default:'' }}"></div>
+        </div>
+        <div class="cmp-acciones">
+            <button type="submit" class="btn btn-primario">Aplicar</button>
+            <a class="btn" href="{% url 'comparacion' %}">Quitar filtros</a>
+        </div>
+    </form>
+</div>
+
+<div class="card glass">
+    <h2>Comparaciones disponibles</h2>
+    <p class="sub">Cada comparación reúne ejecuciones del <b>mismo caso en las mismas condiciones</b>. Si un mismo texto llegó en
+        varios eventos, cuenta como repeticiones del mismo caso, no como casos distintos. Elige una para ver sus gráficas.</p>
+    {% if grupos %}
+    <ul class="cmp-grupos">
+        {% for g in grupos %}
+        <li{% if grupo and grupo.grupo == g.id %} class="actual"{% endif %}>
+            <a href="{% url 'comparacion' %}?{{ q_sin_grupo }}{% if q_sin_grupo %}&amp;{% endif %}grupo={{ g.id }}"{% if grupo and grupo.grupo == g.id %} aria-current="true"{% endif %}>
+                <b>{{ g.caso.codigo }}</b> · {{ g.caso.get_procedencia_display }} · {{ g.n }} {% if g.n == 1 %}ejecución{% else %}ejecuciones{% endif %} ·
+                {{ g.n_proveedores }} {% if g.n_proveedores == 1 %}proveedor{% else %}proveedores{% endif %}
+                <span class="cmp-etq{% if g.equivalencia != 'equivalente' %} cmp-etq-aviso{% endif %}">{{ g.equivalencia_texto }}</span></a>
+            <details class="pd-sec cmp-tecnico">
+                <summary>Ver detalles</summary>
+                <div class="pd-sec-cuerpo"><dl class="cmp-def">
+                    <dt>Condiciones (protocolo)</dt><dd class="cmp-mono">{{ g.protocolo }}</dd>
+                    <dt>Huella de la entrada</dt><dd class="cmp-mono">{{ g.caso.entrada_sha256 }}</dd>
+                    <dt>Formato de salida usado</dt><dd class="cmp-mono">{% if g.detalle.esquema_efectivo == "no_declarado" %}no declarado{% else %}{{ g.detalle.esquema_efectivo }}{% endif %}</dd>
+                    <dt>Formato de salida de referencia</dt><dd class="cmp-mono">{{ g.detalle.esquema_referencia }}</dd>
+                    <dt>Parámetros</dt><dd class="cmp-mono">{{ g.parametros_texto }}</dd>
+                    <dt>Series</dt><dd>{{ g.series|join:" · " }}</dd>
+                </dl></div>
+            </details>
+        </li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="note">No hay ejecuciones con estos filtros. Registra las mediciones propias o importa resultados.</p>
+    {% endif %}
+</div>
+
+{% if grupo %}
+<div class="card glass">
+    <h2>Gráficas · {{ grupo.caso.codigo }} <span class="nchip">{{ grupo.n }} {% if grupo.n == 1 %}ejecución{% else %}ejecuciones{% endif %}</span></h2>
+    <p class="sub">{{ grupo.caso.get_procedencia_display }} · {{ grupo.equivalencia_texto }}{% if grupo.detalle.esquema_efectivo == "no_declarado" %} · formato de salida no declarado{% endif %}</p>
+    {% if grupo.equivalencia != "equivalente" %}<div class="warn">Estas ejecuciones no tienen condiciones verificadas como iguales: no es una comparación controlada.</div>{% endif %}
+    {% if grupo.un_solo_proveedor %}<div class="warn">Muestra inicial de un solo proveedor: describe sus mediciones, no compara.</div>{% endif %}
+    {% if not graficas_disponibles %}
+    <div class="warn">Las gráficas no están disponibles en este servidor (falta la librería de gráficas). Los datos en CSV sí se pueden descargar.</div>
+    {% endif %}
+    <div class="tabla-scroll" style="margin:4px 0 16px;">
+    <table class="tabla">
+        <thead><tr><th>Proveedor</th><th>Modelo informado</th><th>Latencia típica (mediana)</th><th>Mediciones</th>
+            <th class="cmp-ocultable">Tokens totales (mediana)</th><th class="cmp-ocultable">Resultado</th></tr></thead>
+        <tbody>
+        {% for r in grupo.resumen_series %}
+        <tr><td>{{ r.proveedor }}</td><td>{{ r.modelo }}</td>
+            <td>{% if r.latencia is None %}<span class="cmp-nd">No disponible</span>{% else %}{{ r.latencia|floatformat:2 }} s{% endif %}</td>
+            <td>{{ r.n_medido }} con dato{% if r.n_ausente %} · {{ r.n_ausente }} sin dato{% endif %}</td>
+            <td class="cmp-ocultable">{% if r.tokens_total is None %}<span class="cmp-nd">No disponible</span>{% else %}{{ r.tokens_total|floatformat:0 }}{% endif %}</td>
+            <td class="cmp-ocultable">{{ r.resultado }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <div class="cmp-figs">
+    {% for t in tipos_grafica %}
+        <figure class="cmp-fig">
+            <figcaption class="cmp-fig-titulo">{% if t == "latencia" %}Tiempo de respuesta{% elif t == "tokens" %}Tokens{% else %}Resultado de cada ejecución{% endif %}</figcaption>
+            {% if graficas_disponibles %}
+            <img src="{% url 'comparacion_grafica' t 'png' %}?{{ q }}&amp;grupo={{ grupo.grupo }}&amp;vista=1" loading="lazy"
+                 alt="{% if t == 'latencia' %}Latencia{% elif t == 'tokens' %}Tokens{% else %}Resultados{% endif %} del caso {{ grupo.caso.codigo }}">
+            {% endif %}
+            <div class="descargas">
+                {% if graficas_disponibles %}
+                <a class="btn" href="{% url 'comparacion_grafica' t 'png' %}?{{ q }}&amp;grupo={{ grupo.grupo }}">Imagen PNG</a>
+                <a class="btn" href="{% url 'comparacion_grafica' t 'svg' %}?{{ q }}&amp;grupo={{ grupo.grupo }}">SVG</a>
+                <a class="btn" href="{% url 'comparacion_grafica' t 'pdf' %}?{{ q }}&amp;grupo={{ grupo.grupo }}">PDF</a>
+                {% endif %}
+                <a class="btn" href="{% url 'comparacion_grafica_datos' t %}?{{ q }}&amp;grupo={{ grupo.grupo }}">Datos (CSV)</a>
+                <a class="btn" href="{% url 'comparacion_grafica_manifiesto' t %}?{{ q }}&amp;grupo={{ grupo.grupo }}" title="Filtros, identificadores y huellas para reproducir la gráfica">Ficha técnica (JSON)</a>
+            </div>
+        </figure>
+    {% endfor %}
+    </div>
+    <p class="note">PNG a 300 ppp para el documento; SVG y PDF se amplían sin perder calidad. La ficha técnica guarda los
+        identificadores y huellas para reproducir cada gráfica.</p>
+</div>
+{% endif %}
+
+<div class="card glass tabla-panel">
+    <h2>Ejecuciones</h2>
+    <div class="tabla-scroll">
+    <table class="tabla">
+        <thead><tr><th>Caso</th><th>Proveedor · modelo</th><th class="cmp-ocultable">Fecha (UTC)</th><th>Latencia</th>
+            <th class="cmp-ocultable">Tokens totales</th><th>Resultado</th><th class="cmp-ocultable">Origen</th><th></th></tr></thead>
+        <tbody>
+        {% for f, e in filas %}
+        <tr>
+            <td>{{ f.caso }}{% if f.repeticion %} · rep. {{ f.repeticion }}{% endif %}</td>
+            <td>{{ f.proveedor }} · {% if f.modelo_informado %}{{ f.modelo_informado }}{% else %}<span class="cmp-nd">modelo no informado</span>{% endif %}</td>
+            <td class="cmp-ocultable">{% if e.inicio_utc %}{{ e.inicio_utc|date:"Y-m-d H:i" }}{% else %}<span class="cmp-nd">No disponible</span>{% endif %}</td>
+            <td>{% if f.latencia_proveedor_s is None %}<span class="cmp-nd">No disponible</span>{% else %}{{ f.latencia_proveedor_s|floatformat:2 }} s{% endif %}</td>
+            <td class="cmp-ocultable">{% if f.tokens_total is None %}<span class="cmp-nd">No disponible</span>{% else %}{{ f.tokens_total }}{% endif %}</td>
+            <td>{{ f.estado }}</td>
+            <td class="cmp-ocultable">{{ f.origen }}</td>
+            <td><a href="{% url 'comparacion_detalle' e.uuid %}">Ver</a></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="8">Sin ejecuciones.</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% if pagina.has_other_pages %}
+    <p class="note">Página {{ pagina.number }} de {{ pagina.paginator.num_pages }} ·
+        {% if pagina.has_previous %}<a href="?{{ q }}&amp;pagina={{ pagina.previous_page_number }}">anterior</a>{% endif %}
+        {% if pagina.has_next %}<a href="?{{ q }}&amp;pagina={{ pagina.next_page_number }}">siguiente</a>{% endif %}</p>
+    {% endif %}
+    <div class="cmp-acciones" style="margin-top:12px;">
+        <a class="btn" href="{% url 'comparacion_exportar_csv' %}?{{ q }}">Descargar tabla (CSV)</a>
+        <a class="btn" href="{% url 'comparacion_exportar_json' %}?{{ q }}" title="Archivo para importarlo en otra instancia de SENTRIA">Exportar para otra instancia</a>
+    </div>
+</div>
+
+<div class="card glass">
+    <h2>Añadir resultados</h2>
+    <p class="sub"><b>Registrar mediciones propias</b> copia aquí los tiempos y tokens que esta instancia ya guardó en sus
+        análisis, sin cambiarlos ni llamar a la IA. <b>Importar</b> añade resultados de un compañero o del ejecutor
+        independiente: primero verás una vista previa y no se guarda nada hasta que confirmes.</p>
+    <div class="cmp-acciones">
+        <form method="POST" action="{% url 'comparacion_registrar_locales' %}" class="cmp-acciones">{% csrf_token %}
+            <button type="submit" class="btn btn-exito">Registrar mediciones propias ({{ pendientes_locales }})</button>
+            <label class="fld"><input type="checkbox" name="incluir_ambiguas" value="1">
+                Incluir también las ambiguas como ejecuciones separadas</label>
+        </form>
+        <form method="POST" action="{% url 'comparacion_importar' %}" enctype="multipart/form-data" class="cmp-acciones">{% csrf_token %}
+            <div class="fg"><label for="i-arch">Archivo JSON o JSONL (máx. {{ max_kib }} KiB)</label>
+                <input id="i-arch" type="file" name="archivo" accept=".json,.jsonl,application/json" required></div>
+            <div class="fg"><label for="i-part">Participante (opcional, sin nombres)</label>
+                <input id="i-part" type="text" name="participante" maxlength="40" placeholder="p. ej. P2"></div>
+            <button type="submit" class="btn">Ver vista previa</button>
+        </form>
+    </div>
+    <p class="note">Lo importado se muestra como «reportado por un participante»: la huella del archivo comprueba que no se
+        alteró, no que el proveedor respondiera así. Archivos de uso del equipo; no se publican.</p>
+    {% if lotes %}
+    <details class="pd-sec">
+        <summary>Últimas importaciones</summary>
+        <div class="pd-sec-cuerpo"><ul class="note">{% for l in lotes %}<li>{{ l.fecha|date:"Y-m-d H:i" }} UTC · {{ l.formato }} ·
+            {% for t, n in l.recuento %}{{ t }}: {{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            <span class="cmp-mono">({{ l.nombre }})</span></li>{% endfor %}</ul></div>
+    </details>
+    {% endif %}
+</div>
+</div>
+{% endblock %}

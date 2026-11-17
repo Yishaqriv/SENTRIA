@@ -20,6 +20,7 @@ coincide, la consulta falla. No hay alternativa sin verificar.
 import os
 import re
 import sys
+from datetime import datetime, timezone
 
 import requests
 import urllib3
@@ -174,6 +175,12 @@ _SOURCE_FIELDS = [
     # Entrada 1.2: proveedor de los eventos Application/System (evidencia.py solo emite la lista permitida)
     # y hora original del evento Windows (TimeCreated/SystemTime, UTC), distinta de la recepción en Wazuh.
     "data.win.system.providerName", "data.win.system.systemTime",
+    # Accesos web (recolector SENTRIA, esquema 1): proyección acotada. Nunca IP, URL, query, usuario, cabeceras,
+    # client_ref ni event_uid; `_web_crudo` vuelve a filtrar por lista permitida.
+    "data.sentria_source", "data.sentria_web.schema_version", "data.sentria_web.kind",
+    "data.sentria_web.service", "data.sentria_web.http_method", "data.sentria_web.http_status",
+    "data.sentria_web.response_bytes", "data.sentria_web.route_class", "data.sentria_web.has_query",
+    "data.sentria_web.source_time_utc", "data.sentria_web.mode",
 ]
 
 # Atributos de cuenta que informan los eventos 4720/4738 (documentación de Microsoft de ambos eventos).
@@ -232,6 +239,49 @@ def _win_crudo(data):
     return crudo
 
 
+_WEB_SERVICIOS = ("domjudge", "tomcat")
+_WEB_METODOS = ("GET", "POST", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE")
+_WEB_RUTAS = ("api", "authentication_route", "static_asset", "root", "other")
+# `mode` del recolector: `live` (evento observado ahora) o `historical_replay` (registro histórico real reproducido
+# a propósito, con su hora original). Cualquier otro valor -> no_determinado: nunca se presume evento en vivo.
+_WEB_PROCEDENCIA = {"live": "en_vivo", "historical_replay": "historico_reproducido"}
+
+
+def _web_crudo(data):
+    """Capa P: acceso web del recolector SENTRIA (esquema 1) -> solo campos de lista permitida, o None.
+    No reexporta URL, query, cliente, event_uid, cabeceras ni campos desconocidos, aunque el documento los traiga.
+    Un código HTTP (200/401/403/5xx) no es por sí solo un veredicto de seguridad."""
+    if not isinstance(data, dict) or data.get("sentria_source") != "web_access":
+        return None
+    web = data.get("sentria_web")
+    if not isinstance(web, dict) or str(web.get("schema_version")) != "1" or web.get("kind") != "http_access":
+        return None
+    servicio, estado = web.get("service"), str(web.get("http_status", ""))
+    if servicio not in _WEB_SERVICIOS or not re.fullmatch(r"[1-5][0-9]{2}", estado):
+        return None
+    metodo = web.get("http_method")
+    bytes_ = str(web.get("response_bytes", ""))
+    bytes_ = int(bytes_) if re.fullmatch(r"[0-9]{1,18}", bytes_) else None
+    # Por tipo, no por igualdad: 1/0 no son booleanos. Solo bool o las cadenas exactas "true"/"false".
+    query = web.get("has_query")
+    if not isinstance(query, bool):
+        query = {"true": True, "false": False}.get(query) if isinstance(query, str) else None
+    modo = web.get("mode")
+    hora = None
+    crudo = web.get("source_time_utc")
+    if isinstance(crudo, str) and len(crudo) <= 40:
+        try:
+            d = datetime.fromisoformat(crudo.strip().replace("Z", "+00:00"))
+            hora = d.astimezone(timezone.utc).isoformat() if d.tzinfo is not None else None
+        except (ValueError, OverflowError):
+            hora = None
+    return {"service": servicio, "http_method": metodo if metodo in _WEB_METODOS else "OTHER",
+            "http_status": int(estado), "response_bytes": bytes_,
+            "route_class": web.get("route_class") if web.get("route_class") in _WEB_RUTAS else "no_determinado",
+            "has_query": query, "source_time_utc": hora,
+            "procedencia": _WEB_PROCEDENCIA.get(modo, "no_determinado") if isinstance(modo, str) else "no_determinado"}
+
+
 def _normalizar_hit(hit):
     source = hit.get("_source", {}) or {}
     rule = source.get("rule", {}) or {}
@@ -267,6 +317,7 @@ def _normalizar_hit(hit):
                          if any((source.get("data") or {}).get(k) not in (None, "") for k in ("uid", "gid", "shell"))
                          else None),
         "win": _win_crudo(source.get("data")),
+        "web": _web_crudo(source.get("data")),
     }
 
 

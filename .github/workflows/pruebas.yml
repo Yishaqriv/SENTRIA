@@ -1,0 +1,60 @@
+# Pruebas automáticas sin claves, sin MySQL operativo, sin Wazuh y sin red hacia proveedores de IA.
+# Las pruebas se ejecutan con scripts/ci/sin_red.py, que bloquea cualquier conexión que no sea loopback.
+name: Pruebas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Obtener el código
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Dependencias del sistema para mysqlclient
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential default-libmysqlclient-dev pkg-config
+
+      - name: Dependencias de Python
+        run: python -m pip install -r requirements.txt
+
+      - name: Comprobación de Django
+        run: python scripts/ci/sin_red.py manage.py check --settings=sentria_project.settings_ci
+
+      - name: Migraciones al día con los modelos
+        run: python scripts/ci/sin_red.py manage.py makemigrations --check --dry-run --settings=sentria_project.settings_ci
+
+      - name: Suite de Django
+        run: python scripts/ci/sin_red.py manage.py test -v 1 --settings=sentria_project.settings_ci
+
+      - name: Casos sintéticos del ejecutor al día
+        run: python scripts/ci/sin_red.py experimentos/comparacion/fixtures_sinteticos/generar_casos_sinteticos.py --comprobar
+
+      - name: Pruebas del ejecutor de comparación
+        # El ejecutor se niega a funcionar si DJANGO_SETTINGS_MODULE está definido: no se define en este job.
+        working-directory: experimentos/comparacion/herramientas
+        run: python -m unittest -v test_ejecutor test_exportacion

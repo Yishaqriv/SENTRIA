@@ -1,0 +1,25 @@
+# EJEMPLO GENÉRICO de unidad de usuario de systemd para la ingesta continua acotada (una ejecución por disparo).
+# Sustituir cada <MARCADOR>; no es la unidad del laboratorio. Instalar en ~/.config/systemd/user/ sin la
+# extensión .ejemplo. La dispara sentria-ingesta-continua.timer.ejemplo.
+#
+# - El archivo de entorno (SENTRIA_ENV_FILE) es privado (600) y está fuera del repositorio.
+# - SENTRIA_EXCLUSION_DIR debe ser EL MISMO directorio que usa el proceso del dashboard (exclusión común por
+#   alerta); un directorio privado (700) y persistente, no /tmp.
+# - --estado-dir es un directorio privado (700) distinto del de cualquier prueba.
+# - --confirmar puede invocar al proveedor de IA (hasta 2 veces por ejecución, 6 por hora móvil y 30 por día
+#   de America/Bogota; límites fijos en dashboard/ia/continua.py). Para probar sin llamadas: --ensayo.
+# - La salida es JSON con metadatos; no incluye alertas, prompts, respuestas ni claves.
+[Unit]
+Description=SENTRIA: ingesta continua acotada de un agente (una ejecución)
+
+[Service]
+Type=oneshot
+WorkingDirectory=<RUTA_REPOSITORIO>
+Environment=SENTRIA_ENV_FILE=<RUTA_PRIVADA>/sentria.env
+Environment=SENTRIA_EXCLUSION_DIR=<RUTA_PRIVADA>/exclusion
+ExecStart=<RUTA_VENV>/bin/python manage.py ingesta_continua --estado-dir <RUTA_PRIVADA>/estado --agente <AGENT_ID> --nombre-agente <AGENT_NAME> --activo <IDENTIFICADOR_ACTIVO> --desde <INICIO_ISO8601_CON_ZONA> --confirmar
+UMask=0077
+NoNewPrivileges=yes
+TimeoutStartSec=600
+StandardOutput=append:<RUTA_PRIVADA>/ingesta.log
+StandardError=append:<RUTA_PRIVADA>/ingesta.log

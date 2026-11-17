@@ -1,0 +1,14 @@
+# EJEMPLO GENÉRICO: dispara sentria-ingesta-continua.service cada 15 minutos (el intervalo para el que se
+# diseñaron los límites de dashboard/ia/continua.py). Persistent=false: tras un apagado no recupera
+# disparos perdidos; la siguiente ejecución retoma desde la marca de agua guardada en --estado-dir.
+[Unit]
+Description=SENTRIA: temporizador de la ingesta continua acotada (cada 15 min)
+
+[Timer]
+OnCalendar=*:00/15
+AccuracySec=1min
+Persistent=false
+Unit=sentria-ingesta-continua.service
+
+[Install]
+WantedBy=timers.target

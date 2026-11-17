@@ -679,3 +679,156 @@ class AceptacionLoteItem(_RegistroInmutable):
         if not getattr(self, "_desde_aceptar_lote", False):
             raise ValueError("los casos de un lote solo se crean al aceptarlo: no se pueden añadir después")
         super().save(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Comparación de IA (solo superusuario). Tablas ADITIVAS: no modifican Alert ni sus snapshots. Las mediciones de
+# esta instancia se copian desde `Alert.contexto_ia_snapshot['_medicion']` solo con una acción POST explícita
+# (`dashboard/comparacion/local.py`); las de otras instancias llegan por importación de archivos (intercambio.py).
+# Identidad: caso = huella (formato | entrada exacta | esquema canónico); ejecución = UUID estable que viaja en la
+# exportación/importación. Dos ejecuciones con UUID distintos son mediciones distintas aunque su respuesta coincida.
+# Una huella comprueba integridad, NO que el proveedor haya respondido así.
+# ---------------------------------------------------------------------------------------------------------------
+class CasoComparacion(models.Model):
+    PROCEDENCIA_CHOICES = [
+        ("windows_natural", "Windows natural"),
+        ("web_natural", "Web natural"),
+        ("web_historico_reproducido", "Web histórico reproducido"),
+        ("diagnostico_agente", "Diagnóstico del agente"),
+        ("no_determinada", "No determinada"),
+    ]
+    ORIGEN_CHOICES = [("local", "Registrado desde esta instancia"), ("importado", "Registrado al importar")]
+
+    clave = models.CharField(max_length=64, unique=True)          # sha256(formato|entrada|esquema)
+    codigo = models.CharField(max_length=40)                       # neutral; NO identifica (puede repetirse)
+    entrada_sha256 = models.CharField(max_length=64, db_index=True)
+    esquema_sha256 = models.CharField(max_length=64, null=True, blank=True)   # canónico; null = no informado
+    formato_entrada = models.CharField(max_length=40)
+    contexto_sha256 = models.CharField(max_length=64, null=True, blank=True)  # informativo, fuera de la clave
+    extension_web = models.CharField(max_length=40, null=True, blank=True)
+    procedencia = models.CharField(max_length=32, choices=PROCEDENCIA_CHOICES, default="no_determinada")
+    descripcion = models.CharField(max_length=200, blank=True, default="")
+    origen_registro = models.CharField(max_length=10, choices=ORIGEN_CHOICES)
+    procedencia_asignada_por = models.ForeignKey(
+        "auth.User", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    procedencia_asignada_en = models.DateTimeField(null=True, blank=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["codigo", "id"]
+
+    def __str__(self):
+        return f"{self.codigo} ({self.entrada_sha256[:12]})"
+
+
+class LoteImportacionComparacion(_RegistroInmutable):
+    """Auditoría de una importación confirmada: archivo (huella, no contenido), quién y qué resultó."""
+    uuid = models.UUIDField(unique=True)
+    archivo_sha256 = models.CharField(max_length=64)
+    archivo_nombre = models.CharField(max_length=120)
+    archivo_bytes = models.PositiveIntegerField()
+    formato = models.CharField(max_length=40)
+    participante = models.CharField(max_length=40, blank=True, default="")
+    resumen = models.JSONField()                                   # recuentos y motivos sanitizados
+    importado_por = models.ForeignKey("auth.User", null=True, on_delete=models.SET_NULL, related_name="+")
+    importado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-importado_en", "-id"]
+
+
+class EjecucionComparacion(_RegistroInmutable):
+    """Una ejecución (o referencia observada) de UN proveedor sobre UN caso. Append-only: nunca se sobrescribe."""
+    ORIGEN_CHOICES = [
+        ("observada_local", "Observada por esta instancia"),
+        ("importada", "Importada (reportada por un participante)"),
+        ("referencia", "Referencia observada (paquete)"),
+    ]
+    LLAMADA_CHOICES = [("ok", "Respondió"), ("error", "Fallo de llamada"), ("sin_llamada", "Sin llamada")]
+    ANALISIS_CHOICES = [("COMPLETED", "Aceptada por SENTRIA"), ("ANALISIS_FALLIDO", "Rechazada o fallida")]
+
+    uuid = models.UUIDField(unique=True)
+    # True si el UUID NO es una identidad propia de la ejecución sino derivado de una línea sin UUID (formato v1):
+    # no demuestra que dos registros sean la misma ejecución ni que sean distintas.
+    identidad_derivada = models.BooleanField(default=False)
+    caso = models.ForeignKey(CasoComparacion, on_delete=models.PROTECT, related_name="ejecuciones")
+    repeticion = models.PositiveIntegerField(null=True, blank=True)
+    origen_medicion = models.CharField(max_length=20, choices=ORIGEN_CHOICES)
+    origen_declarado = models.CharField(max_length=40, blank=True, default="")   # lo que decía el archivo
+    participante = models.CharField(max_length=40, blank=True, default="")
+    proveedor = models.CharField(max_length=60)
+    modelo_solicitado = models.CharField(max_length=120, null=True, blank=True)
+    modelo_informado = models.CharField(max_length=120, null=True, blank=True)
+    parametros = models.JSONField(null=True, blank=True)
+    parametros_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    codigo_base_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    codigo_ejecucion_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    adaptador_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    esquema_efectivo_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    texto_enviado_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    equivalencia = models.CharField(max_length=20, default="no_verificada")      # equivalente/variante/...
+    inicio_utc = models.DateTimeField(null=True, blank=True)
+    definicion_tiempo = models.CharField(max_length=160, blank=True, default="")
+    latencia_proveedor_s = models.FloatField(null=True, blank=True)
+    duracion_analisis_s = models.FloatField(null=True, blank=True)
+    duracion_ejecucion_s = models.FloatField(null=True, blank=True)
+    tokens_entrada = models.PositiveBigIntegerField(null=True, blank=True)
+    tokens_salida = models.PositiveBigIntegerField(null=True, blank=True)
+    tokens_razonamiento = models.PositiveBigIntegerField(null=True, blank=True)
+    tokens_total = models.PositiveBigIntegerField(null=True, blank=True)
+    tokens_fuente = models.CharField(max_length=40, null=True, blank=True)
+    estado_llamada = models.CharField(max_length=12, choices=LLAMADA_CHOICES)
+    estado_analisis = models.CharField(max_length=20, choices=ANALISIS_CHOICES, null=True, blank=True)
+    categoria_error = models.CharField(max_length=80, null=True, blank=True)     # sanitizada
+    motivo_sin_llamada = models.CharField(max_length=60, null=True, blank=True)
+    finish_reason = models.CharField(max_length=40, null=True, blank=True)
+    codigo_http = models.PositiveSmallIntegerField(null=True, blank=True)
+    veredicto = models.CharField(max_length=40, null=True, blank=True)
+    riesgo = models.CharField(max_length=20, null=True, blank=True)
+    respuesta_observada = models.TextField(null=True, blank=True)
+    respuesta_sha256 = models.CharField(max_length=64, null=True, blank=True)
+    observaciones = models.TextField(blank=True, default="")
+    huella_observacion = models.CharField(max_length=64, db_index=True)
+    huella_contenido = models.CharField(max_length=64)
+    lote = models.ForeignKey(LoteImportacionComparacion, null=True, blank=True, on_delete=models.PROTECT,
+                             related_name="ejecuciones")
+    # Trazabilidad PRIVADA de esta instancia: nunca se exporta ni se muestra en gráficas.
+    alerta_local = models.OneToOneField("Alert", null=True, blank=True, on_delete=models.SET_NULL,
+                                        related_name="+")
+    registrado_por = models.ForeignKey("auth.User", null=True, on_delete=models.SET_NULL, related_name="+")
+    registrado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-inicio_utc", "-id"]
+        indexes = [models.Index(fields=["proveedor", "modelo_informado"], name="comp_ejec_prov_modelo")]
+
+
+class ConjuntoComparacion(_RegistroInmutable):
+    """Conjunto COMÚN y congelado de casos para comparar proveedores (piloto comparativo, no muestra representativa).
+    Identidad: código + versión + huella del manifiesto (lista exacta de casos por huella, reglas de ejecución y de
+    agregación). Una vez creado no cambia: ampliarlo es otra versión."""
+    codigo = models.CharField(max_length=40)
+    version = models.PositiveIntegerField()
+    descripcion = models.CharField(max_length=300, blank=True, default="")
+    reglas = models.JSONField()
+    casos_manifiesto = models.JSONField()          # descripción congelada de cada caso (no cambia con la interfaz)
+    manifiesto_sha256 = models.CharField(max_length=64, unique=True)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["codigo", "-version"]
+        constraints = [models.UniqueConstraint(fields=["codigo", "version"], name="conjunto_codigo_version_unico")]
+
+    def __str__(self):
+        return f"{self.codigo} v{self.version}"
+
+
+class ConjuntoCaso(_RegistroInmutable):
+    """Pertenencia de un caso (por su huella) a un conjunto congelado. Solo la crea `conjuntos.crear`."""
+    conjunto = models.ForeignKey(ConjuntoComparacion, on_delete=models.PROTECT, related_name="miembros")
+    caso = models.ForeignKey(CasoComparacion, on_delete=models.PROTECT, related_name="conjuntos")
+    orden = models.PositiveIntegerField()
+
+    class Meta:
+        ordering = ["conjunto_id", "orden"]
+        constraints = [models.UniqueConstraint(fields=["conjunto", "caso"], name="conjunto_caso_unico")]
