@@ -1,4 +1,5 @@
-# Django y API REST (dashboard/, usuarios/; JWT es scaffolding, ver CLAUDE.md)
+# Django y API REST (dashboard/, usuarios/). Las rutas JWT (api/token/) están habilitadas,
+# pero la aplicación no las usa: se autentica con sesiones de Django.
 Django==6.0.4
 djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.1
@@ -22,6 +23,21 @@ gunicorn==26.0.0
 # Estáticos servidos por la propia aplicación con DEBUG=False (compatible con Django 6.0)
 whitenoise==6.12.0
 
-# Prototipo Flask legacy (sentria_web.py) — eliminar cuando se haga la limpieza
-# de código legado (ver roadmap en CLAUDE.md); no es parte de la app activa.
+# Gráficas del apartado «Comparación de IA» (dashboard/comparacion/graficas.py). Opcional en tiempo de
+# ejecución: sin Matplotlib el resto del apartado funciona y las figuras responden 503 con un aviso.
+# Versiones instaladas en el entorno del servicio de la máquina virtual (Python 3.12, 13 nov 2026).
+matplotlib==3.11.2
+contourpy==1.4.0
+cycler==0.12.1
+fonttools==4.68.0
+kiwisolver==1.5.1
+numpy==2.5.4
+packaging==26.2
+pillow==13.0.0
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+six==1.17.0
+
+# Prototipo Flask anterior (sentria_web.py): no forma parte de la aplicación activa.
+# Se mantiene hasta que se retire ese archivo en una limpieza de código legado.
 Flask==3.1.3

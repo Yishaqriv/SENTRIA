@@ -44,6 +44,10 @@
             <a class="nav-item" href="{% url 'metricas' %}"{% if un == 'metricas' %} aria-current="page"{% endif %}>
                 <span class="ico i-metricas" aria-hidden="true"></span><span>Métricas</span></a>
             {% endif %}
+            {% if request.user.is_superuser and request.user.is_active %}
+            <a class="nav-item" href="{% url 'comparacion' %}"{% if un == 'comparacion' or un == 'comparacion_detalle' or un == 'comparacion_importar' %} aria-current="page"{% endif %}>
+                <span class="ico i-metricas" aria-hidden="true"></span><span>Comparación de IA</span></a>
+            {% endif %}
             {% if request.user|tiene_rol:"ADMIN" %}
             <a class="nav-item" href="{% url 'lista_usuarios' %}"{% if un == 'lista_usuarios' or un == 'crear_usuario' or un == 'editar_usuario' or un == 'eliminar_usuario' %} aria-current="page"{% endif %}>
                 <span class="ico i-usuarios" aria-hidden="true"></span><span>Usuarios</span></a>

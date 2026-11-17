@@ -1,0 +1,66 @@
+{% extends "sentria/base_app.html" %}
+{% block titulo %}Vista previa de importación{% endblock %}
+{% block content %}
+{% include "dashboard/comparacion/_estilos.html" %}
+<div class="pagina">
+<header class="pagina-cabecera glass glass-fuerte">
+    <div><h1>Vista previa de importación</h1>
+    <p class="subtitulo">Todavía no se ha guardado nada. Revisa el resultado y confirma o cancela.</p></div>
+</header>
+<div class="card glass">
+    <h2>{{ nombre }}</h2>
+    <p class="sub">{{ vista.formato }} · {{ resumen.total }} registro{{ resumen.total|pluralize }}{% if participante %} · participante {{ participante }}{% endif %}</p>
+    <div class="kpis">
+        {% for t, n in vista.recuento %}<div class="kpi"><div class="n">{{ n }}</div><div class="l">{{ t }}</div></div>{% endfor %}
+    </div>
+    <details class="pd-sec cmp-ayuda">
+        <summary>Qué significa cada resultado</summary>
+        <div class="pd-sec-cuerpo"><dl class="cmp-def">
+            <dt>Nueva</dt><dd>se añadirá.</dd>
+            <dt>Caso nuevo</dt><dd>el caso no existe aquí; solo se añade si lo confirmas abajo. Dos casos con el mismo nombre pero distinto contenido se guardan por separado.</dd>
+            <dt>Ya registrada</dt><dd>la misma ejecución ya está guardada; no se duplica.</dd>
+            <dt>Conflicto</dt><dd>mismo identificador con datos distintos; se rechaza sin cambiar lo guardado.</dd>
+            <dt>Ambigua</dt><dd>tiene la misma respuesta que otra ejecución y su formato antiguo no permite saber si es la misma; no se junta con la otra ni se importa salvo que lo marques.</dd>
+            <dt>Rechazada</dt><dd>no supera la validación o contiene datos no permitidos (claves, IP, rutas, identificadores privados…).</dd>
+        </dl>
+        <p class="note">Si dos ejecuciones distintas tienen la misma respuesta, ambas se conservan como repeticiones.</p></div>
+    </details>
+</div>
+<div class="card glass tabla-panel">
+    <div class="tabla-scroll">
+    <table class="tabla">
+        <thead><tr><th>#</th><th>Caso</th><th>Resultado</th><th>Motivo</th></tr></thead>
+        <tbody>
+        {% for f in vista.filas %}
+        <tr><td>{{ f.n }}</td><td>{{ f.codigo|default:"—" }}</td><td>{{ f.resultado_texto }}</td><td>{{ f.motivo|default:"" }}</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <details class="pd-sec">
+        <summary>Ver detalles técnicos</summary>
+        <div class="pd-sec-cuerpo">
+            <dl class="cmp-def"><dt>Huella del archivo (SHA-256)</dt><dd class="cmp-mono">{{ sha256 }}</dd>
+                <dt>Formato técnico</dt><dd class="cmp-mono">{{ resumen.formato }}</dd></dl>
+            <p class="pd-sub-titulo">Identificadores de cada registro</p>
+            <ul class="note">{% for f in vista.filas %}<li>#{{ f.n }} · <span class="cmp-mono">{{ f.uuid|default:"sin identificador válido" }}</span></li>{% endfor %}</ul>
+        </div>
+    </details>
+</div>
+<div class="card glass">
+    <form method="POST" action="{% url 'comparacion_importar_confirmar' %}" class="cmp-acciones">{% csrf_token %}
+        <input type="hidden" name="sha256" value="{{ sha256 }}">
+        {% if resumen.recuento.caso_nuevo %}
+        <label class="fld"><input type="checkbox" name="registrar_casos_nuevos" value="1">
+            Añadir también los {{ resumen.recuento.caso_nuevo }} registro(s) de casos nuevos</label>
+        {% endif %}
+        {% if resumen.recuento.ambigua %}
+        <label class="fld"><input type="checkbox" name="importar_ambiguas" value="1">
+            Importar las {{ resumen.recuento.ambigua }} ambigua(s) como ejecuciones separadas</label>
+        {% endif %}
+        <button type="submit" name="accion" value="confirmar" class="btn btn-primario">Confirmar importación</button>
+        <button type="submit" name="accion" value="cancelar" class="btn">Cancelar</button>
+    </form>
+</div>
+</div>
+{% endblock %}

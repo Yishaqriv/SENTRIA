@@ -77,10 +77,19 @@ def _texto_evidencia(nivel, grupos, ev):
             f"Proceso: {ev['process_category']}. "
             f"Telemetría: {ev['telemetry_source']}."
         )
+    elif "web_estado_http" in ev:
+        partes.append(
+            f"Acceso web registrado por el recolector SENTRIA: servicio {ev['web_servicio']}, "
+            f"método {ev['web_metodo_http']}, respuesta HTTP {ev['web_estado_http']} ({ev['web_clase_estado']}), "
+            f"clase de ruta {ev['web_clase_ruta']}, parámetros de consulta presentes: {ev['web_con_query']}, "
+            f"bytes de respuesta: {ev['web_bytes_respuesta']}. Procedencia: {ev['web_procedencia']}. "
+            f"Telemetría: {ev.get('telemetry_source', 'no_determinado')}. Un código HTTP por sí solo no confirma "
+            "autenticación fallida ni ataque; no hay identidad del cliente, URL ni correlación entre accesos."
+        )
     else:
         partes.append(f"Telemetría: {ev.get('telemetry_source', 'no_determinado')}. "
                       "Sólo hay descripción, nivel y grupos de la regla; sin datos FIM estructurados.")
-    extra = [k for k in ev if k.startswith(("sca_", "cuenta_", "win_"))]
+    extra = [k for k in ev if k.startswith(("sca_", "cuenta_", "win_", "web_"))]
     if extra:
         partes.append("Incluye evidencia estructurada adicional (categorías anonimizadas): " + ", ".join(extra) + ".")
     return " ".join(partes)
@@ -174,12 +183,16 @@ def hora_del_evento(alert):
     """
     -> (momento UTC | None, fuente, recepción UTC | None).
     fuente: 'recepcion_wazuh' (no Windows: única hora disponible, comportamiento anterior) ·
-            'hora_original_windows' · 'hora_original_ausente' · 'hora_original_invalida' ·
+            'hora_original_windows' · 'hora_original_web' (acceso web: `source_time_utc`) · 'hora_original_ausente' ·
+            'hora_original_invalida' ·
             'hora_original_sin_zona' · 'hora_original_incoherente' (anterior a 2000 o posterior a la recepción
             en más de la tolerancia de reloj).
     """
     recepcion = _parsear_ts(alert.get("timestamp"))
     recepcion = _a_utc(recepcion) if recepcion is not None else None
+    web = alert.get("web") if isinstance(alert.get("web"), dict) else None
+    if web is not None and not _es_evento_windows(alert):
+        return _hora_original(web.get("source_time_utc"), recepcion, "hora_original_web")
     if not _es_evento_windows(alert):
         return recepcion, "recepcion_wazuh", recepcion
     win = alert.get("win") if isinstance(alert.get("win"), dict) else {}
@@ -197,6 +210,24 @@ def hora_del_evento(alert):
     if original.year < _ANIO_MINIMO_EVENTO or (recepcion is not None and original > recepcion + _TOLERANCIA_RELOJ):
         return None, "hora_original_incoherente", recepcion
     return original, "hora_original_windows", recepcion
+
+
+def _hora_original(crudo, recepcion, fuente_ok):
+    """Hora original de un acceso web (UTC con zona), con los mismos límites que la de Windows. Un histórico
+    reproducido conserva su hora original: ser anterior a la recepción es válido; posterior (más tolerancia), no."""
+    if crudo in (None, ""):
+        return None, "hora_original_ausente", recepcion
+    if not isinstance(crudo, str) or len(crudo) > 40:
+        return None, "hora_original_invalida", recepcion
+    original = _parsear_ts(crudo.strip())
+    if original is None:
+        return None, "hora_original_invalida", recepcion
+    if original.tzinfo is None:
+        return None, "hora_original_sin_zona", recepcion
+    original = _a_utc(original)
+    if original.year < _ANIO_MINIMO_EVENTO or (recepcion is not None and original > recepcion + _TOLERANCIA_RELOJ):
+        return None, "hora_original_incoherente", recepcion
+    return original, fuente_ok, recepcion
 
 
 def diagnostico_tiempo(alert, activo=None):
@@ -390,11 +421,16 @@ _ETIQUETAS_EXTRA = {
     "win_proveedor_categoria": "categoría del proveedor", "win_id_evento": "ID de evento de Windows",
     "win_auditoria_subcategoria": "subcategoría de auditoría modificada", "win_auditoria_cambio": "cambio de auditoría",
     "win_dispositivo_clase": "clase del dispositivo",
+    "web_servicio": "servicio web", "web_metodo_http": "método HTTP", "web_estado_http": "código de respuesta HTTP",
+    "web_clase_estado": "clase de la respuesta HTTP", "web_bytes_respuesta": "bytes de respuesta",
+    "web_clase_ruta": "clase de ruta (sin la ruta)", "web_con_query": "parámetros de consulta presentes (sin valores)",
+    "web_procedencia": "procedencia del registro web",
 }
 
 
 def _lineas_evidencia_extra(ev):
-    """Solo para campos 1.1/1.2 presentes; todos son categorías cerradas o identificadores validados (nunca texto libre)."""
+    """Solo para campos 1.1/1.2/1.4 y web presentes; todos son categorías cerradas o identificadores validados
+    (nunca texto libre)."""
     out = ""
     for k, etiqueta in _ETIQUETAS_EXTRA.items():
         if k in ev:

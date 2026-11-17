@@ -13,6 +13,7 @@ ninguna conexión ni exige que exista una clave de API.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -32,6 +33,8 @@ class RespuestaProveedor:
     parsed: dict | None = None          # JSON ya deserializado por el SDK (response.parsed)
     finish_reason: str | None = None    # p. ej. "STOP", "MAX_TOKENS", "SAFETY"
     usage: dict | None = None           # conteos de tokens (prompt/candidates/thoughts/total)
+    modelo_respuesta: str | None = None  # versión del modelo que informa la propia respuesta, si la trae
+    codigo_http: int | None = None      # código HTTP REAL de un error del proveedor (nunca deducido de un mensaje)
 
 
 class ProveedorIA(ABC):
@@ -41,6 +44,11 @@ class ProveedorIA(ABC):
     @abstractmethod
     def analizar(self, prompt: str) -> RespuestaProveedor:
         ...
+
+    def parametros_medicion(self):
+        """Parámetros de generación declarados (para registrar la medición), o None si el proveedor no los declara.
+        Solo configuración: nunca credenciales, cabeceras ni endpoints."""
+        return None
 
 
 class GeminiDeveloperProvider(ProveedorIA):
@@ -56,6 +64,16 @@ class GeminiDeveloperProvider(ProveedorIA):
             from google import genai  # import perezoso
             self._client = genai.Client(api_key=self._api_key)
         return self._client
+
+    def parametros_medicion(self):
+        from .contrato import esquema_json_salida
+        esquema = json.dumps(esquema_json_salida(), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        return {"response_mime_type": "application/json",
+                "esquema_salida_sha256": hashlib.sha256(esquema.encode("utf-8")).hexdigest(),
+                "max_output_tokens": 8192, "temperature": 0.1, "thinking_budget": 0, "timeout_ms": 60_000,
+                "instruccion_sistema": None,
+                # Sin `retry_options`, google-genai hace un único intento HTTP (configuración, no observación).
+                "reintentos_configurados": 0}
 
     def _config(self):
         from google.genai import types
@@ -125,28 +143,41 @@ class GeminiDeveloperProvider(ProveedorIA):
                 model=self._modelo, contents=prompt, config=self._config())
             fr = self._finish_reason(respuesta)
             usage = self._usage(respuesta)
+            mv = getattr(respuesta, "model_version", None)
+            mv = mv if isinstance(mv, str) and mv else None
             parsed = self._parsed(respuesta)
             texto_bruto = getattr(respuesta, "text", None)
             texto = texto_bruto.strip() if isinstance(texto_bruto, str) else ""
 
             if fr and any(x in fr for x in ("SAFETY", "PROHIBITED", "BLOCKLIST", "SPII", "RECITATION")):
                 return RespuestaProveedor(ok=False, texto="", modelo=self._modelo, parsed=None,
-                                          finish_reason=fr, usage=usage,
+                                          finish_reason=fr, usage=usage, modelo_respuesta=mv,
                                           error=f"bloqueo de seguridad del proveedor (finish_reason={fr})")
             if fr and "MAX_TOKENS" in fr:
                 return RespuestaProveedor(ok=False, texto=texto, modelo=self._modelo, parsed=parsed,
-                                          finish_reason=fr, usage=usage,
+                                          finish_reason=fr, usage=usage, modelo_respuesta=mv,
                                           error="respuesta truncada por MAX_TOKENS")
             if parsed is None and not texto:
                 return RespuestaProveedor(ok=False, texto="", modelo=self._modelo, parsed=None,
-                                          finish_reason=fr, usage=usage,
+                                          finish_reason=fr, usage=usage, modelo_respuesta=mv,
                                           error=f"respuesta vacía (finish_reason={fr})")
             return RespuestaProveedor(ok=True, texto=texto, modelo=self._modelo, parsed=parsed,
-                                      finish_reason=fr, usage=usage)
+                                      finish_reason=fr, usage=usage, modelo_respuesta=mv)
         except Exception as e:  # clave ausente, cuota, timeout, red, esquema, etc.
             return RespuestaProveedor(
-                ok=False, texto="", modelo=self._modelo, error=f"{type(e).__name__}: {e}"
+                ok=False, texto="", modelo=self._modelo, error=f"{type(e).__name__}: {e}",
+                codigo_http=_codigo_http_sdk(e),
             )
+
+
+def _codigo_http_sdk(exc):
+    """Código HTTP de un `google.genai.errors.APIError` (atributo `code`), o None si no es uno o no es válido."""
+    try:
+        from google.genai import errors
+    except Exception:
+        return None
+    codigo = getattr(exc, "code", None) if isinstance(exc, errors.APIError) else None
+    return codigo if isinstance(codigo, int) and not isinstance(codigo, bool) and 100 <= codigo <= 599 else None
 
 
 _RE_ENDPOINT_VERTEX = re.compile(r"projects/[a-z0-9-]{1,63}/locations/(us|eu)/endpoints/[0-9]{1,30}")
@@ -262,6 +293,10 @@ class VertexTunedProvider(ProveedorIA):
     GENERACION = {"responseMimeType": "application/json", "maxOutputTokens": 8192,
                   "thinkingConfig": {"thinkingLevel": "MINIMAL"}}
 
+    def parametros_medicion(self):
+        return {"generation_config": json.loads(json.dumps(self.GENERACION)), "timeout_s": self.TIMEOUT_S,
+                "instruccion_sistema": None, "reintentos_configurados": 0}    # una única petición urllib
+
     def __init__(self):
         self._endpoint = os.environ.get("GEMINI_TUNED_ENDPOINT", "").strip()
         self._habilitado = os.environ.get("IA_VERTEX_HABILITADO", "").strip() == "1"
@@ -354,7 +389,8 @@ class VertexTunedProvider(ProveedorIA):
                 estado = str((json.loads(e.read().decode("utf-8", "replace")).get("error") or {}).get("status") or "")
             except Exception:
                 pass
-            return self._fallo(f"HTTP {e.code} del endpoint ajustado" + (f" ({estado[:40]})" if estado else ""))
+            return self._fallo(f"HTTP {e.code} del endpoint ajustado" + (f" ({estado[:40]})" if estado else ""),
+                               codigo_http=e.code if isinstance(e.code, int) and 100 <= e.code <= 599 else None)
         except (socket.timeout, TimeoutError):
             return self._fallo("timeout del endpoint ajustado")
         except Exception as e:
@@ -367,18 +403,22 @@ class VertexTunedProvider(ProveedorIA):
             return self._fallo(f"bloqueo de seguridad del proveedor (blockReason={bloqueo})")
         cand = (datos.get("candidates") or [{}])[0]
         fr = cand.get("finishReason")
+        mv = datos.get("modelVersion") if isinstance(datos.get("modelVersion"), str) else None
         um = datos.get("usageMetadata") or {}
         usage = {"prompt": um.get("promptTokenCount"), "candidates": um.get("candidatesTokenCount"),
                  "thoughts": um.get("thoughtsTokenCount"), "total": um.get("totalTokenCount")}
         partes = (cand.get("content") or {}).get("parts") or []
         texto = "".join(p.get("text", "") for p in partes if isinstance(p, dict) and not p.get("thought")).strip()
         if fr and any(x in fr for x in _FR_BLOQUEO):
-            return self._fallo(f"bloqueo de seguridad del proveedor (finish_reason={fr})", finish_reason=fr, usage=usage)
+            return self._fallo(f"bloqueo de seguridad del proveedor (finish_reason={fr})", finish_reason=fr, usage=usage,
+                               modelo_respuesta=mv)
         if fr and "MAX_TOKENS" in fr:
-            return self._fallo("respuesta truncada por MAX_TOKENS", texto=texto, finish_reason=fr, usage=usage)
+            return self._fallo("respuesta truncada por MAX_TOKENS", texto=texto, finish_reason=fr, usage=usage,
+                               modelo_respuesta=mv)
         if not texto:
-            return self._fallo(f"respuesta vacía (finish_reason={fr})", finish_reason=fr, usage=usage)
-        return RespuestaProveedor(ok=True, texto=texto, modelo=self._modelo, parsed=None, finish_reason=fr, usage=usage)
+            return self._fallo(f"respuesta vacía (finish_reason={fr})", finish_reason=fr, usage=usage, modelo_respuesta=mv)
+        return RespuestaProveedor(ok=True, texto=texto, modelo=self._modelo, parsed=None, finish_reason=fr, usage=usage,
+                                  modelo_respuesta=mv)
 
 
 PROVEEDORES = {

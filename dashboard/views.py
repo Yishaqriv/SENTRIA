@@ -19,6 +19,8 @@ from usuarios.decorators import requiere_rol, usuario_tiene_rol
 from .models import (
     Alert, ActivoLogico, VentanaMantenimiento, RevisionHumana, CandidatoDataset,
 )
+from .ia import exclusion
+from .ia.exclusion import AnalisisEnCursoError, AnalisisInciertoError
 from .ia.ingesta import es_prueba_controlada, ingestar_lote, reanalizar_alerta
 from .ia.persistencia import registrar_correccion_humana
 from .ia.proveedores import nombre_proveedor_activo
@@ -44,6 +46,8 @@ MOTIVOS_VALIDOS = ['SIN_CONTEXTO_ACTIVO', 'NIVEL_NO_ELEGIBLE', 'RUIDO_OPERATIVO'
 REVISION_VALIDOS = ['sin_revisar', 'confirmada', 'corregida', 'excluida', 'con_verdad_terreno']
 ORDEN_VALIDO    = ['timestamp', '-timestamp', 'severidad', '-severidad', 'riesgo_ia', '-riesgo_ia', 'estado', '-estado']
 
+AVISO_INCIERTO = ("una llamada anterior pudo ejecutarse y no quedó cerrada; requiere revisión y no se "
+                  "reenvía")
 PAUSA_ENTRE_LLAMADAS_GEMINI = 4  # segundos, para no exceder la cuota de Gemini
 
 # --- Q para el veredicto EFECTIVO (corrección humana si existe, si no el de la IA) ---
@@ -337,6 +341,11 @@ def update_alerts(request):
     if c.get('bloqueadas_experimento'):
         messages.info(request, f"{c['bloqueadas_experimento']} alerta(s) de prueba controlada sin cambios "
                                f"(no se reanalizan).")
+    if c.get('en_curso'):
+        messages.info(request, f"{c['en_curso']} alerta(s) en análisis por otra vía: no se tocaron ni se "
+                               f"volvieron a enviar.")
+    if c.get('requieren_revision'):
+        messages.warning(request, f"{c['requieren_revision']} alerta(s) sin tocar: {AVISO_INCIERTO}.")
 
     if c['nuevas'] == 0 and c['recuperadas'] == 0:
         messages.info(request, "No hay alertas nuevas para importar.")
@@ -358,6 +367,10 @@ def reclasificar_pendientes(request):
     if resultado.get('bloqueadas_experimento'):
         messages.info(request, f"{resultado['bloqueadas_experimento']} alerta(s) de prueba controlada excluida(s) "
                                f"de la reclasificación (sin reintentos).")
+    if resultado.get('en_curso'):
+        messages.info(request, f"{resultado['en_curso']} alerta(s) en análisis por otra vía: no se reclasificaron.")
+    if resultado.get('requieren_revision'):
+        messages.warning(request, f"{resultado['requieren_revision']} alerta(s) excluida(s): {AVISO_INCIERTO}.")
     if resultado['total'] == 0:
         messages.info(request, "No hay alertas para reclasificar.")
     else:
@@ -387,12 +400,18 @@ def reclasificar_alertas_pendientes(pausa_segundos=PAUSA_ENTRE_LLAMADAS_GEMINI, 
     pendientes = [a for a in candidatas if not es_prueba_controlada(a)]
     bloqueadas = len(candidatas) - len(pendientes)
     total = len(pendientes)
-    analizadas = omitidas = fallidas = 0
+    analizadas = omitidas = fallidas = en_curso = requieren_revision = 0
     for i, alerta in enumerate(pendientes):
         if i > 0 and pausa_segundos:
             time.sleep(pausa_segundos)
         try:
             accion = reanalizar_alerta(alerta, proveedor=proveedor)
+        except AnalisisEnCursoError:        # otra vía la analiza: sin llamada ni cambios
+            en_curso += 1
+            continue
+        except AnalisisInciertoError:       # llamada anterior sin cerrar: sin llamada ni cambios
+            requieren_revision += 1
+            continue
         except Exception:
             fallidas += 1
             continue
@@ -403,7 +422,7 @@ def reclasificar_alertas_pendientes(pausa_segundos=PAUSA_ENTRE_LLAMADAS_GEMINI, 
         else:
             fallidas += 1
     return {'total': total, 'analizadas': analizadas, 'omitidas': omitidas, 'fallidas': fallidas,
-            'bloqueadas_experimento': bloqueadas}
+            'bloqueadas_experimento': bloqueadas, 'en_curso': en_curso, 'requieren_revision': requieren_revision}
 
 
 @requiere_rol('ADMIN', 'ANALISTA')
@@ -547,6 +566,11 @@ def reintentar_analisis(request, alert_id):
     if es_prueba_controlada(alerta):     # antes de leer Wazuh, llamar al modelo o tocar la fila
         messages.error(request, "Alerta de prueba controlada: su análisis no admite reintentos.")
         return redirect('index')
+    try:                                 # llamada anterior sin cerrar: aviso explícito, sin reintento
+        exclusion.comprobar_no_incierto(exclusion.clave_de_fila(alerta))
+    except AnalisisInciertoError:
+        messages.warning(request, f"Reintento no disponible: {AVISO_INCIERTO}.")
+        return redirect('index')
     if not alerta.analisis_fallido:
         messages.error(request, "Solo se puede reintentar una alerta con fallo de análisis.")
         return redirect('index')
@@ -560,6 +584,13 @@ def reintentar_analisis(request, alert_id):
                 override = None
         try:
             accion = reanalizar_alerta(alerta, alert_override=override)
+        except AnalisisEnCursoError:
+            messages.info(request, "Otra vía está analizando esta alerta: no se reintentó. Revise el resultado en "
+                                   "unos segundos.")
+            return redirect('index')
+        except AnalisisInciertoError:
+            messages.warning(request, f"Reintento no disponible: {AVISO_INCIERTO}.")
+            return redirect('index')
         except Exception as exc:
             messages.error(request, f"El reintento no pudo ejecutarse: {type(exc).__name__}")
             return redirect('index')

@@ -2079,7 +2079,7 @@ class AnalisisDirigidoPorOpensearchIdTests(TestCase):
     def test_nivel_bajo_no_llama(self):
         fake = _FakeGemini()
         with self.assertRaises(_CommandError):
-            self._run(self._doc(level=5, rule_id="554",
+            self._run(self._doc(level=3, rule_id="554",
                                 groups="ossec,syscheck,syscheck_file,syscheck_entry_added",
                                 syscheck_event="added"), prov=fake)
         self.assertEqual(fake.n, 0)
@@ -6437,6 +6437,11 @@ class _PilotoBase:
         asignar_agente("000", "SRV-01")
         self.dir = tempfile.mkdtemp(prefix="sentria-piloto-test-")
         self.addCleanup(lambda: __import__("shutil").rmtree(self.dir, ignore_errors=True))
+        # Exclusión común aislada por prueba: una interrupción simulada deja (como debe) su marca persistente de
+        # llamada sin cerrar, y no debe afectar a otras pruebas que reutilizan los mismos opensearch_id sintéticos.
+        entorno = mock.patch.dict(os.environ, {"SENTRIA_EXCLUSION_DIR": os.path.join(self.dir, "exclusion")})
+        entorno.start()
+        self.addCleanup(entorno.stop)
         self.ruta = os.path.join(self.dir, "piloto.jsonl")
         self.futuro = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)).strftime(
             "%Y-%m-%dT%H:%M:%SZ")

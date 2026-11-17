@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .comparacion import views as comparacion
 
 urlpatterns = [
     # Colas operativas separadas (Sprint 2B; reorganizadas en 3C/3D)
@@ -25,4 +26,27 @@ urlpatterns = [
     path('dataset/planificador/',     views.planificador_dataset, name='planificador_dataset'),
     path('dataset/<str:ejemplo_id>/', views.candidato_detalle, name='candidato_detalle'),
     path('reclasificar_pendientes',   views.reclasificar_pendientes, name='reclasificar_pendientes'),
+
+    # Comparación de IA: solo el superusuario real (ver dashboard/comparacion/views.py)
+    path('comparacion/', comparacion.comparacion, name='comparacion'),
+    path('comparacion/ejecucion/<uuid:uuid>/', comparacion.comparacion_detalle, name='comparacion_detalle'),
+    path('comparacion/grafica/<slug:tipo>.<slug:formato>', comparacion.comparacion_grafica,
+         name='comparacion_grafica'),
+    path('comparacion/grafica/<slug:tipo>/datos.csv', comparacion.comparacion_grafica_datos,
+         name='comparacion_grafica_datos'),
+    path('comparacion/grafica/<slug:tipo>/manifiesto.json', comparacion.comparacion_grafica_manifiesto,
+         name='comparacion_grafica_manifiesto'),
+    path('comparacion/resumen/datos.csv', comparacion.comparacion_resumen_datos, name='comparacion_resumen_datos'),
+    path('comparacion/resumen/ficha.json', comparacion.comparacion_resumen_ficha, name='comparacion_resumen_ficha'),
+    path('comparacion/resumen/<slug:tipo>.<slug:formato>', comparacion.comparacion_resumen_grafica,
+         name='comparacion_resumen_grafica'),
+    path('comparacion/exportar.csv', comparacion.comparacion_exportar_csv, name='comparacion_exportar_csv'),
+    path('comparacion/exportar.json', comparacion.comparacion_exportar_json, name='comparacion_exportar_json'),
+    path('comparacion/registrar-locales/', comparacion.comparacion_registrar_locales,
+         name='comparacion_registrar_locales'),
+    path('comparacion/importar/', comparacion.comparacion_importar, name='comparacion_importar'),
+    path('comparacion/importar/confirmar/', comparacion.comparacion_importar_confirmar,
+         name='comparacion_importar_confirmar'),
+    path('comparacion/caso/<str:clave>/procedencia/', comparacion.comparacion_procedencia,
+         name='comparacion_procedencia'),
 ]
