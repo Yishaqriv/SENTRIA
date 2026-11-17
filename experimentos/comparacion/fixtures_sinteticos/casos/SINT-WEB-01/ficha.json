@@ -1,0 +1,27 @@
+{
+ "archivos": {
+  "contexto_capa_e.json": {
+   "sha256": "091121e449e355d9fa8cc5fb074c1d5d43469cd408db1aee630ee8ae59e175d3"
+  },
+  "entrada.txt": {
+   "sha256": "580aba62e4e5e0baee8bc62cf2cc7774a1bdc46c263d0f083c8ba481aed6523a"
+  },
+  "respuesta_referencia_gemini.json": {
+   "sha256": "7b3397e1874bc2d95d679d2d9b75373c8a4ae8175465be499cdf13243f98dc2f"
+  }
+ },
+ "caso": "SINT-WEB-01",
+ "codigo": {
+  "manifiesto_codigo_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "descripcion": "Sintético: acceso web 401 de un servicio de demostración (regla 119602, nivel 5)",
+ "esquema_salida": {
+  "archivo": "../../esquema_salida.json",
+  "sha256_archivo": "c4000b6ac4cc12d16fd176e00b5afc8d82d1984a8d13205efe875252be5b44a5",
+  "sha256_canonico": "4c67891e7e608a4f564d580af6e916cc8eb1c3d701947d4fccd9b3bf546d78c2"
+ },
+ "estado_referencia": "sintetica",
+ "procedencia_conjunto": "no_determinada",
+ "tipo": "web_sintetico",
+ "uso": "Caso sintético para pruebas automáticas: no es una alerta real ni una respuesta de un modelo."
+}

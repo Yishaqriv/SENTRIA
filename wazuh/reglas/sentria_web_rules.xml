@@ -1,0 +1,23 @@
+<group name="sentria_web,web,accesslog,">
+  <rule id="119600" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="sentria_source" type="pcre2">^web_access$</field>
+    <field name="sentria_web.kind" type="pcre2">^http_access$</field>
+    <description>Evento estructurado de acceso web SENTRIA.</description>
+  </rule>
+  <rule id="119601" level="3">
+    <if_sid>119600</if_sid>
+    <field name="sentria_web.http_status" type="pcre2">^[1-5][0-9][0-9]$</field>
+    <description>Acceso HTTP observado: $(sentria_web.service), $(sentria_web.http_method), respuesta $(sentria_web.http_status).</description>
+  </rule>
+  <rule id="119602" level="5">
+    <if_sid>119601</if_sid>
+    <field name="sentria_web.http_status" type="pcre2">^(401|403)$</field>
+    <description>Acceso HTTP requiere autenticacion o fue denegado: $(sentria_web.service), respuesta $(sentria_web.http_status). No confirma un ataque.</description>
+  </rule>
+  <rule id="119603" level="5">
+    <if_sid>119601</if_sid>
+    <field name="sentria_web.http_status" type="pcre2">^5[0-9][0-9]$</field>
+    <description>Error HTTP del servicio web $(sentria_web.service): respuesta $(sentria_web.http_status).</description>
+  </rule>
+</group>

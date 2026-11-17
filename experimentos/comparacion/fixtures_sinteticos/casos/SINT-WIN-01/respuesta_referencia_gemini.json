@@ -1,0 +1,21 @@
+{
+ "cvss_factors": {
+  "attack_complexity": "no_determinado",
+  "attack_vector": "no_determinado",
+  "availability_impact": "no_determinado",
+  "confidentiality_impact": "no_determinado",
+  "integrity_impact": "no_determinado",
+  "privileges_required": "no_determinado",
+  "scope": "no_determinado",
+  "user_interaction": "no_determinado"
+ },
+ "cvss_reasoning_es": "Factores no determinados: caso sintético sin evidencia adicional.",
+ "explanation_es": "Respuesta SINTÉTICA para el caso SINT-WIN-01; no la produjo ningún modelo.",
+ "missing_evidence": [
+  "Ninguna: caso sintético"
+ ],
+ "recommendation_es": "Sin recomendación: caso sintético de prueba.",
+ "risk": "LOW",
+ "schema_version": "1.0",
+ "verdict": "REQUIERE_ATENCION"
+}

@@ -1,0 +1,148 @@
+{
+ "additionalProperties": false,
+ "properties": {
+  "cvss_factors": {
+   "additionalProperties": false,
+   "properties": {
+    "attack_complexity": {
+     "enum": [
+      "baja",
+      "alta",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "attack_vector": {
+     "enum": [
+      "red",
+      "adyacente",
+      "local",
+      "fisico",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "availability_impact": {
+     "enum": [
+      "ninguno",
+      "bajo",
+      "alto",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "confidentiality_impact": {
+     "enum": [
+      "ninguno",
+      "bajo",
+      "alto",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "integrity_impact": {
+     "enum": [
+      "ninguno",
+      "bajo",
+      "alto",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "privileges_required": {
+     "enum": [
+      "ninguno",
+      "bajos",
+      "altos",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "scope": {
+     "enum": [
+      "sin_cambio",
+      "cambiado",
+      "no_determinado"
+     ],
+     "type": "string"
+    },
+    "user_interaction": {
+     "enum": [
+      "ninguna",
+      "requerida",
+      "no_determinado"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "attack_vector",
+    "attack_complexity",
+    "privileges_required",
+    "user_interaction",
+    "scope",
+    "confidentiality_impact",
+    "integrity_impact",
+    "availability_impact"
+   ],
+   "type": "object"
+  },
+  "cvss_reasoning_es": {
+   "maxLength": 800,
+   "minLength": 20,
+   "type": "string"
+  },
+  "explanation_es": {
+   "maxLength": 600,
+   "minLength": 20,
+   "type": "string"
+  },
+  "missing_evidence": {
+   "items": {
+    "maxLength": 120,
+    "minLength": 3,
+    "type": "string"
+   },
+   "maxItems": 10,
+   "type": "array"
+  },
+  "recommendation_es": {
+   "maxLength": 500,
+   "minLength": 10,
+   "type": "string"
+  },
+  "risk": {
+   "enum": [
+    "LOW",
+    "MEDIUM",
+    "HIGH",
+    "CRITICAL"
+   ],
+   "type": "string"
+  },
+  "schema_version": {
+   "enum": [
+    "1.0"
+   ],
+   "type": "string"
+  },
+  "verdict": {
+   "enum": [
+    "FALSO_POSITIVO",
+    "REQUIERE_ATENCION"
+   ],
+   "type": "string"
+  }
+ },
+ "required": [
+  "schema_version",
+  "verdict",
+  "risk",
+  "explanation_es",
+  "cvss_factors",
+  "cvss_reasoning_es",
+  "recommendation_es",
+  "missing_evidence"
+ ],
+ "type": "object"
+}
