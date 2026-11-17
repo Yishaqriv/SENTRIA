@@ -1,0 +1,82 @@
+{
+ "inventario_del_agente_del_servidor": {
+  "que": "lectura de solo lectura del indexador, todos los niveles, del agente del servidor Windows",
+  "periodo_utc": [
+   "2026-11-12T05:30:32.329Z",
+   "2026-11-14T05:47:09.092Z"
+  ],
+  "total_declarado_por_el_indexador": 39162,
+  "eventos_leidos": 39161,
+  "paginacion_completa": false,
+  "nota_paginacion": "un evento de nivel 3 quedó fuera por un empate en el orden de paginación; hay una propuesta de corrección sin aplicar",
+  "nivel_5_o_mas": 13,
+  "nivel_5_o_mas_confirmados_por_consulta_dirigida": {
+   "total_exacto": 13,
+   "coinciden_con_inventario": true,
+   "hasta_utc": "2026-11-14T06:35:01+00:00"
+  },
+  "textos_distintos_nivel_5_o_mas": 10,
+  "por_nivel": {
+   "3": 39147,
+   "5": 10,
+   "7": 2,
+   "9": 1,
+   "4": 1
+  },
+  "llamadas_ia": 0
+ },
+ "ingesta_continua": {
+  "que": "trabajador periódico (cada 15 min) del comando ingesta_continua sobre el agente del servidor",
+  "primer_intento_utc": "2026-11-13T00:25:44.116+00:00",
+  "corte_utc": "2026-11-16T21:00:53.053+00:00",
+  "intentos": 12,
+  "por_estado": {
+   "completado": 12
+  },
+  "por_resultado_del_analisis": {
+   "COMPLETED": 12
+  },
+  "por_categoria": {
+   "windows": 9,
+   "agente_wazuh": 2,
+   "web": 1
+  },
+  "entradas_distintas": 8,
+  "errores_de_lectura_sin_consumo": 1,
+  "medicion": {
+   "version": [
+    "medicion_v2"
+   ],
+   "con_medicion": 12,
+   "tokens_informados_por_el_proveedor": 12,
+   "modelo_solicitado_e_informado": [
+    {
+     "solicitado": "models/gemini-3.5-flash",
+     "informado": "gemini-3.6-flash",
+     "n": 12
+    }
+   ],
+   "reintentos_configurados": [
+    0
+   ],
+   "latencia_llamada_s": {
+    "n": 12,
+    "mediana": 4.05,
+    "min": 3.13,
+    "max": 5.69
+   },
+   "duracion_analisis_s": {
+    "n": 12,
+    "mediana": 4.43
+   },
+   "tokens_total_por_llamada": {
+    "n": 12,
+    "min": 1826,
+    "max": 2149,
+    "mediana": 1919.5
+   }
+  },
+  "alcance": "COMPLETED significa que la respuesta superó el contrato JSON y los controles de sustento; no que el veredicto sea correcto. Los tokens no se presentan como coste.",
+  "no_incluye": "identificadores de documentos, nombres de agente o activo, entradas, respuestas ni veredictos"
+ }
+}

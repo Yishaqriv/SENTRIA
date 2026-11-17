@@ -2,6 +2,42 @@
 
 Formato: una sección por versión principal, de la más reciente a la más antigua. Cada versión remite a sus commits. Las fechas son las de los commits (hora de Bogotá), no las del desarrollo: buena parte del trabajo de septiembre se versionó el 5 de octubre.
 
+## Integración con un servidor en uso, ingesta continua y comparación de proveedores (noviembre de 2026)
+
+Cambios desplegados en la máquina virtual del laboratorio entre el 12 y el 13 nov 2026 sobre `6d8c6b5`, sin commit hasta esta versión. Los archivos de código de esta versión coinciden por huella con los que ejecuta esa máquina (comprobado el 16 nov 2026), salvo dos cambios hechos al preparar la publicación: el encabezado de `ingestar_alertas.py` (solo documentación; el comando se comporta igual) y `sentria_project/settings_ci.py`, que solo usan las pruebas. La prueba `sentria_project/tests_aislamiento_ci.py` también es nueva.
+
+**Configuración**
+- `sentria_project/settings.py`: `IA_POLITICA = {"nivel_minimo": 5}`. El valor por defecto del código sigue siendo 7 (`dashboard/ia/politica.py`).
+- `.env.example`: `SENTRIA_EXCLUSION_DIR` y nota sobre `MPLCONFIGDIR`; `GEMINI_MODEL` se documenta como modelo solicitado.
+- `requirements.txt`: Matplotlib 3.11.2 y sus dependencias, fijadas, para las gráficas de la comparación.
+- `sentria_project/settings_ci.py` (solo pruebas): aislamiento efectivo del entorno. Antes eliminaba `SENTRIA_ENV_FILE` y rellenaba valores con `setdefault`, así que `settings.py` y `sentria_backend.py` (este con `override=True`) seguían cargando el `.env` local y los valores del shell sobrevivían. Ahora apunta `SENTRIA_ENV_FILE` a un archivo vacío temporal, retira las variables de credenciales, destinos y autorizaciones y fuerza los marcadores. La configuración de producción no cambia.
+
+**Evidencia web** (`sentria_backend.py`, `dashboard/ia/evidencia.py`, `dashboard/ia/prompt.py`)
+- Accesos web de un recolector externo (esquema 1, servicios `domjudge` y `tomcat`) normalizados por lista permitida: método, código HTTP, bytes, clase de ruta, presencia de parámetros, hora original y procedencia (`en_vivo`, `historico_reproducido` o `no_determinado`). Nunca URL, parámetros, cliente, usuario ni cabeceras.
+- Reglas de Wazuh 119600–119603 en `wazuh/reglas/`.
+
+**Medición del análisis** (`dashboard/ia/analizador.py`, `dashboard/ia/proveedores.py`)
+- `medicion_v2` en el snapshot de cada análisis: estado de la llamada y del análisis por separado, latencia de la llamada y duración del análisis, tokens que informa el proveedor (ausentes como `null`, nunca 0), modelo solicitado y modelo informado por la respuesta, parámetros declarados, reintentos configurados y código HTTP real de un error.
+
+**Ingesta continua y exclusión común** (`dashboard/ia/continua.py`, `dashboard/ia/exclusion.py`, `dashboard/ia/ingesta.py`, `dashboard/views.py`)
+- Comando `ingesta_continua`: un agente, alertas nuevas de la más antigua a la más reciente, límites fijos de 2 llamadas por ejecución, 6 por hora móvil y 30 por día de Bogotá, sin reintentos automáticos; `--ensayo`, `--confirmar`, `--ver-estado`, `--pausar` y `--reanudar`.
+- Exclusión por alerta entre todas las vías que pueden llamar al modelo y marca persistente de llamada sin cerrar; comando `revisar_incierto` para listarlas y liberarlas con motivo.
+- `ingestar_alertas`: registra los parámetros declarados del proveedor en la medición.
+- Unidades de ejemplo en `despliegue/systemd/`.
+
+**Comparación de IA** (`dashboard/comparacion/`, migraciones `0015` y `0016`, plantillas en `dashboard/templates/dashboard/comparacion/`)
+- Apartado solo para el superusuario real: registro de mediciones propias, importación idempotente con vista previa, conjuntos congelados por manifiesto, exportación CSV/JSON, gráficas PNG/SVG/PDF y resumen del conjunto.
+- Ejecutor independiente y casos sintéticos en `experimentos/comparacion/`.
+
+**Pruebas:** `dashboard/tests_web_medicion.py`, `dashboard/tests_ingesta_continua.py`, `dashboard/tests_comparacion.py` (156 métodos de prueba nuevos), `sentria_project/tests_aislamiento_ci.py` (3, aislamiento de `settings_ci`) y dos ajustes en `dashboard/tests.py`: una prueba de política usa ahora un nivel inferior a 5 y otra aísla el directorio de exclusión. Resultado de la ejecución en `docs/validacion/PRUEBAS_CANDIDATO.md`.
+
+**Documentación:** README, manuales y configuración actualizados; `docs/producto/COMPARACION_IA.md`, `docs/validacion/` y `wazuh/README.md` nuevos. Integración continua en `.github/workflows/pruebas.yml`.
+
+**Fuera de esta versión**
+- El desempate de la paginación del indexador (`@timestamp`, `id`, `_index`) sigue siendo una propuesta sin aplicar.
+- Los recolectores web del servidor Windows y los resultados de las campañas de comparación con otros proveedores.
+- La imagen Docker no se reconstruyó con estos cambios.
+
 ## Documentación de entrega (31 oct 2026)
 
 Sin cambios funcionales sobre `6d8c6b5`:

@@ -1,4 +1,6 @@
-# Manual de administración de SENTRIA (versión `6d8c6b5`)
+# Manual de administración de SENTRIA
+
+Describe el código de `6d8c6b5` con los cambios de noviembre de 2026 ([`CHANGELOG.md`](../../CHANGELOG.md)). Donde algo solo vale para `6d8c6b5`, se indica.
 
 
 Para la persona que administra SENTRIA: cuentas, activos, ingesta, ventanas, conjunto de ajuste, credenciales y operación diaria. Para escribirlo no se ejecutó nada. Las marcas son las del [manual de instalación](MANUAL_INSTALACION.md):
@@ -22,6 +24,7 @@ Hay tres roles: Administrador, Analista e Invitado. Un superusuario de Django cu
 | Conjunto de ajuste: bandeja, sincronizar, planificador | Sí | Sí | No |
 | «Reclasificar fallidas» | Sí | No | No |
 | Gestión de usuarios | Sí | No | No |
+| «Comparación de IA» | Solo si la cuenta es superusuario de Django activo; el rol no basta | No | No |
 | Panel de administración de Django (`/admin/`) | Lo decide Django (ver la nota) | Lo decide Django | Lo decide Django |
 
 **Nota sobre `/admin/`.** El acceso al panel no depende del rol de SENTRIA, sino de las condiciones de Django:
@@ -29,6 +32,8 @@ Hay tres roles: Administrador, Analista e Invitado. Un superusuario de Django cu
 - dentro del panel, cada modelo exige los permisos de Django de esa cuenta, salvo para un superusuario, que los tiene todos.
 
 Una cuenta con el rol de invitado y `is_staff=True` podría entrar al panel si está activa; una de administrador con `is_staff=False` no puede entrar, aunque sea superusuario. La gestión de usuarios de SENTRIA no muestra ni cambia `is_staff`. **[D]** (comportamiento de `django.contrib.admin`; sin prueba registrada en el laboratorio)
+
+El apartado «Comparación de IA» se describe en [COMPARACION_IA.md](COMPARACION_IA.md).
 
 Los permisos por rol se comprobaron con la suite (pruebas de navegación por rol y de acciones de escritura por POST) **[C]**. En la vista previa con datos sintéticos, la cuenta de invitado no ve las acciones de escritura **[C]** (captura VP-5 del [manual de usuario](MANUAL_USUARIO.md)).
 
@@ -60,8 +65,8 @@ SENTRIA solo envía al modelo las alertas de un agente asociado a un **activo l�
 
 ## 4. Política de elegibilidad e ingesta
 
-- **Política:** decide qué alertas se envían al modelo. Sus valores por defecto están en el código (`dashboard/ia/politica.py`): nivel 7 o superior, un activo asociado y que la alerta no corresponda a ruido operativo excluido (por defecto, alertas que traen a la vez los grupos `dpkg` y `config_changed`); no hay reglas ni grupos excluidos. **[C]** en el laboratorio, con esos valores.
-- **Cambiar la política:** solo en el servidor, definiendo `IA_POLITICA` en `settings.py`, un diccionario con los campos que se quieran cambiar (`nivel_minimo`, `exige_contexto_activo`, `grupos_excluidos`, `rule_ids_excluidos` o `combinaciones_ruido`); los demás conservan su valor por defecto. En `6d8c6b5` solo aparece como comentario de ejemplo, así que rigen los valores por defecto. No hay pantalla ni variable de entorno para cambiarla. La aplicación web lee la configuración al arrancar, y cada ejecución del comando de ingesta, al empezar. **[D]** el cambio por `IA_POLITICA`: sale del código, no se probó.
+- **Política:** decide qué alertas se envían al modelo. Sus valores por defecto están en el código (`dashboard/ia/politica.py`): nivel 7 o superior, un activo asociado y que la alerta no corresponda a ruido operativo excluido (por defecto, alertas que traen a la vez los grupos `dpkg` y `config_changed`); no hay reglas ni grupos excluidos. **En esta versión `settings.py` fija el nivel mínimo en 5** (`IA_POLITICA = {"nivel_minimo": 5}`); el resto conserva su valor por defecto. **[C]** nivel 7 en el laboratorio hasta el 12 nov 2026; nivel 5 desde ese día (niveles 3 y 4 excluidos y 5 a 7 elegibles, comprobado con el entorno del servicio).
+- **Cambiar la política:** solo en el servidor, definiendo `IA_POLITICA` en `settings.py`, un diccionario con los campos que se quieran cambiar (`nivel_minimo`, `exige_contexto_activo`, `grupos_excluidos`, `rule_ids_excluidos` o `combinaciones_ruido`); los demás conservan su valor por defecto. En `6d8c6b5` solo aparecía como comentario de ejemplo. No hay pantalla ni variable de entorno para cambiarla. La aplicación web lee la configuración al arrancar, y cada ejecución de los comandos de ingesta, al empezar: tras cambiarla hay que reiniciar el dashboard. **[C]** el cambio a 5 del 12 nov 2026.
 - **Qué pasa con las alertas que la política no admite** depende del camino (`6d8c6b5`) **[C]**:
   - con **«Actualizar»**, una alerta nueva no elegible se registra como omitida por política, con su motivo, y queda visible en su cola;
   - el **comando de ingesta** evalúa la política antes de registrar: las no elegibles **solo se cuentan** y no aparecen en ninguna cola. En los modos dirigido y de prueba controlada, una alerta no elegible detiene la orden;
@@ -70,10 +75,37 @@ SENTRIA solo envía al modelo las alertas de un agente asociado a un **activo l�
 - **Comando de ingesta** (servidor):
   - ensayo sin escrituras ni llamadas: `python manage.py ingestar_alertas --agent-id <ID> --dry-run`;
   - ejecución: `--confirmar`;
-  - consulta en el indexador hasta 100 alertas del agente con nivel igual o superior al mínimo de la política (7 por defecto) (`--scan-limit`, máximo 500), y analiza las primeras elegibles, hasta 3 por ejecución (`--max-analisis`, tope fijo de 3);
-  - **[C]** en los pilotos y las pruebas, con sus propios topes. No está programado: no hay tarea periódica **[C]**.
+  - consulta en el indexador hasta 100 alertas del agente con nivel igual o superior al mínimo de la política (5 en esta versión) (`--scan-limit`, máximo 500), y analiza las primeras elegibles, hasta 3 por ejecución (`--max-analisis`, tope fijo de 3);
+  - **[C]** en los pilotos y las pruebas, con sus propios topes, y el 12 nov 2026 en una ingesta dirigida de un evento del servidor Windows (`--opensearch-id … --confirmar`, una llamada). Este comando no se programa: la ingesta periódica es el comando `ingesta_continua` (sección 4 bis).
 - **«Reclasificar fallidas»** (solo administrador): vuelve a analizar en una sola ejecución todas las alertas pendientes, fallidas u omitidas, salvo las de pruebas controladas, con una pausa de 4 s entre llamadas y **sin tope total de llamadas**. Puede consumir cuota de la API: usarla a sabiendas. **[D] Documentada, no comprobada:** sale del código; no consta su uso en el laboratorio con `6d8c6b5`.
+- **Llamada sin cerrar:** todas las vías que pueden llamar al modelo para una alerta («Actualizar», «Reintentar», «Reclasificar fallidas», los dos comandos de ingesta) comparten una exclusión por alerta en `SENTRIA_EXCLUSION_DIR`. Si otra vía la está analizando, no se llama y la fila no cambia. Si una llamada anterior pudo ejecutarse y no quedó cerrada (por ejemplo, el proceso murió durante la llamada), queda una marca persistente y **ninguna vía la reenvía** hasta que una persona la revise (sección 4 bis). **[D]** (código: `dashboard/ia/exclusion.py`; pruebas en `dashboard/tests_ingesta_continua.py`)
 - **Modos de piloto y de prueba controlada** del comando (`--piloto`, `--iniciar-experimento`, `--opensearch-id`, …): exigen registros privados sellados y confirmación escrita. Son para pruebas, no para la operación. **[C]**
+
+## 4 bis. Ingesta continua acotada
+
+El comando `ingesta_continua` lee las alertas nuevas de **un** agente y analiza las elegibles, de la más antigua a la más reciente. Está pensado para un temporizador de systemd cada 15 minutos; hay unidades de ejemplo en [`despliegue/systemd/`](../../despliegue/systemd/). Código: `dashboard/ia/continua.py` y `dashboard/management/commands/ingesta_continua.py`.
+
+```
+python manage.py ingesta_continua --estado-dir <DIR_PRIVADO> --agente <AGENT_ID> --nombre-agente <AGENT_NAME> \
+       --activo <IDENTIFICADOR_ACTIVO> --desde <INICIO_ISO8601_CON_ZONA> --ensayo        # sin llamadas ni escrituras
+python manage.py ingesta_continua ... --confirmar                                         # puede llamar al modelo
+python manage.py ingesta_continua --estado-dir <DIR_PRIVADO> --agente <AGENT_ID> --ver-estado   # solo lectura
+python manage.py ingesta_continua --estado-dir <DIR_PRIVADO> --agente <AGENT_ID> --pausar | --reanudar
+```
+
+- **Límites fijos de llamadas al modelo:** 2 por ejecución, 6 en cualquier ventana móvil de 60 minutos y 30 por día de America/Bogota. Son conteos de invocaciones, no de dinero ni de tokens. Sin reintentos automáticos ni proveedor de respaldo.
+- **Solo alertas nuevas:** un documento ya registrado en SENTRIA (en cualquier estado) o ya intentado por el trabajador no se vuelve a enviar. `--excluir <opensearch_id>` (repetible) aparta documentos concretos.
+- **Comprobaciones antes de llamar:** el agente debe tener ese `agent.name` y resolver ese activo; `--confirmar` exige `SENTRIA_EXCLUSION_DIR` y, con el proveedor por defecto, `GEMINI_API_KEY`. Una lectura incompleta o inconsistente del indexador se rechaza sin llamar ni avanzar la marca.
+- **Web:** solo se automatizan los accesos con `mode = live`; los históricos reproducidos y los de procedencia desconocida no.
+- **Corte:** tras 3 análisis fallidos seguidos con llamada, o un 429 real del proveedor, se detiene hasta el día siguiente.
+- **Cobertura:** `--desde` fija el inicio explícito; después se guarda una marca de agua. Límite conocido: los documentos indexados con mucho retraso respecto a la marca, o ya borrados por la retención del indexador, no se recuperan. El orden de paginación (`@timestamp`, `id`, `_index`) puede saltarse eventos empatados; hay una propuesta de corrección **no aplicada** en esta versión.
+- **Salida:** JSON con metadatos; nunca alertas, entradas, respuestas, claves ni mensajes de excepción.
+
+**Revisar una llamada sin cerrar** (`revisar_incierto`, nunca llama al modelo; exige `SENTRIA_EXCLUSION_DIR`):
+- `python manage.py revisar_incierto --listar`: solo lectura; cada marca con el estado actual de su fila.
+- `python manage.py revisar_incierto --liberar <CLAVE> --motivo <TEXTO> --revisor <NOMBRE>`: retira la marca y deja un registro con el motivo. No envía nada: solo permite que una vía manual vuelva a analizar la alerta como una llamada nueva y consciente. Antes, contrastar la fila y la consola del proveedor.
+
+**Estado en el laboratorio [C]:** activa desde el 12 nov 2026 sobre el agente del servidor Windows, con un lanzador privado que aporta el agente, el activo, el inicio y los directorios. Hasta el corte del 16 nov 2026 (21:00 UTC): 12 intentos y 12 análisis completados ([`docs/validacion/`](../validacion/README.md)). El lanzador y las unidades del laboratorio no se publican.
 
 ## 5. Ventanas de mantenimiento
 
@@ -132,9 +164,10 @@ El ajuste en sí se lanzó fuera de la aplicación, en Vertex AI. Para la operac
 | Estado | `systemctl --user status sentria-dashboard.service` | `docker ps --filter name=<CONTENEDOR>` |
 | Detener / arrancar | `systemctl --user stop sentria-dashboard.service` / `systemctl --user start sentria-dashboard.service` | `docker stop <CONTENEDOR>` / `docker start <CONTENEDOR>` |
 | Registros | `journalctl --user -u sentria-dashboard.service` y el log de la unidad | `docker logs --tail 100 <CONTENEDOR>` |
-| Tras reiniciar el equipo | El servicio no está habilitado: se arranca a mano o se decide `enable` | Abrir Docker Desktop y arrancar el contenedor |
+| Tras reiniciar el equipo | Según esté habilitado o no el servicio (`systemctl --user is-enabled sentria-dashboard.service`) | Abrir Docker Desktop y arrancar el contenedor |
+| Ingesta continua (si está instalada) | `systemctl --user list-timers` y `--ver-estado`; detener: `systemctl --user disable --now <TEMPORIZADOR>` | No se probó en Docker |
 
-Estado: **[C]** en la VM (12 oct). En Docker, **[C]** el contenedor del dashboard del PC; las órdenes generales son **[D]**.
+Estado: **[C]** en la VM (12 oct; el servicio se habilitó el 9 nov 2026 y el temporizador de la ingesta continua funciona desde el 12 nov 2026). En Docker, **[C]** el contenedor del dashboard del PC; las órdenes generales son **[D]**.
 
 El servicio de la VM sirve la aplicación con el servidor de desarrollo de Django (`runserver`), no con Gunicorn; los registros conservados no permiten establecer el valor de `DJANGO_DEBUG` durante las pruebas ([manual de instalación](MANUAL_INSTALACION.md), sección 5). La imagen Docker usa Gunicorn y fija `DJANGO_DEBUG=False`.
 
@@ -147,7 +180,9 @@ El servicio de la VM sirve la aplicación con el servidor de desarrollo de Djang
 4. Aplicarlas de forma deliberada.
 5. Reiniciar el servicio o recrear el contenedor con la imagen nueva.
 
-**[D]**; en el laboratorio, el paso a `6d8c6b5` no tenía migraciones y se hizo reiniciando el dashboard **[C]**.
+**[D]**; en el laboratorio, el paso a `6d8c6b5` no tenía migraciones y se hizo reiniciando el dashboard **[C]**. Los cambios de noviembre de 2026 traen las migraciones aditivas `0015` y `0016` (comparación), aplicadas en el laboratorio el 13 nov 2026 con respaldo previo **[C]**.
+
+**Si el servidor usa un lanzador que fija el commit y las huellas** (como el del laboratorio), un commit, un cambio de rama o una actualización del código en esa copia de trabajo lo hace abortar. Actualizar primero el lanzador, de forma coordinada y con vuelta atrás preparada.
 
 ## 9. Lo que este manual no cubre
 

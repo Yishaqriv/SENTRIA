@@ -17,6 +17,7 @@ Las direcciones, los nombres de equipo y las huellas reales no se incluyen.
 | 000 | Máquina virtual (el propio servidor de Wazuh) | Ubuntu 24.04 | SRV-01 | Agente local del servidor; no se instala aparte | [C] |
 | 001 | Portátil (anfitrión de VirtualBox) | Windows | LAPTOP-01 | Conecta a la VM por el reenvío de puertos del NAT de VirtualBox | [C] conectado. **[F] no hay registro de su instalación** (anterior a septiembre de 2026) |
 | 002 | Computador de escritorio | Windows, con Docker Desktop | PC-01 | Instalado el 12 oct 2026 con el procedimiento de la sección 3 | [C] (registros del laboratorio, 12 oct 2026) |
+| 003 | Servidor Windows con servicios web en contenedores Docker, en uso real y administrado por un tercero | Windows | Activo de tipo servidor interno (identificador no publicado) | Conecta al manager por una red privada virtual; envía también accesos web estructurados de un recolector externo ([`wazuh/README.md`](../../wazuh/README.md)) | [C] desde el 12 nov 2026 |
 
 Versión: el servidor, el indexador y el panel son la 4.14.5-1, y el agente 002 es la 4.14.5-1. **El agente no debe ser más nuevo que el servidor.** Ya existía una 4.14.6 y no se usó. **[C]**
 
@@ -71,7 +72,7 @@ Para las pruebas controladas se vigiló una carpeta aislada de laboratorio en el
   3. validar el XML;
   4. reiniciar el agente;
   5. comprobar la línea base.
-- Reglas que se disparan: 550 («Integrity checksum changed», nivel 7), 553 («File deleted», nivel 7) y 554 («File added», nivel 5). Con la política de SENTRIA, la 554 no llega al modelo, porque su nivel es menor que 7.
+- Reglas que se disparan: 550 («Integrity checksum changed», nivel 7), 553 («File deleted», nivel 7) y 554 («File added», nivel 5). Con la política de `6d8c6b5` (nivel mínimo 7), la 554 no llegaba al modelo; con la de esta versión (nivel mínimo 5) es elegible si el agente tiene un activo asociado.
 - Vuelta atrás: restaurar la copia del `ossec.conf` y reiniciar el agente.
 
 Fuente: el plan y los registros privados de la prueba FIM-PC01-1. Los eventos de la prueba se generaron con [`generar_eventos_fim.ps1`](../../scripts/laboratorio_windows/generar_eventos_fim.ps1).

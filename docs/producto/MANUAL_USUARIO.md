@@ -1,4 +1,6 @@
-# Manual de usuario de SENTRIA (versión `6d8c6b5`)
+# Manual de usuario de SENTRIA
+
+Describe el código de `6d8c6b5` con los cambios de noviembre de 2026 ([`CHANGELOG.md`](../../CHANGELOG.md)). Las capturas son de `6d8c6b5`; las pantallas de este manual no cambiaron en noviembre, salvo los avisos de la sección 10.
 
 
 Para quien revisa alertas (rol de analista) y para quien solo consulta (rol de invitado). Las tareas del administrador están en el manual de administración. Para escribirlo no se ejecutó nada. Las marcas:
@@ -15,7 +17,7 @@ Las evidencias de las marcas [C] son registros del laboratorio que no se publica
 
 ## 1. Qué hace SENTRIA por usted
 
-SENTRIA trae alertas de Wazuh y, si cumplen la política (nivel 7 o superior, un equipo con perfil y que no correspondan a ruido operativo excluido), le pide a un modelo de lenguaje una primera interpretación:
+SENTRIA trae alertas de Wazuh y, si cumplen la política (nivel 5 o superior en esta versión, un equipo con perfil y que no correspondan a ruido operativo excluido; hasta el 12 nov 2026 el mínimo del laboratorio era 7), le pide a un modelo de lenguaje una primera interpretación:
 - un veredicto: requiere atención o falso positivo;
 - un nivel de riesgo;
 - campos inspirados en CVSS;
@@ -23,7 +25,7 @@ SENTRIA trae alertas de Wazuh y, si cumplen la política (nivel 7 o superior, un
 
 Antes de mostrarla, comprueba que la respuesta tenga el formato esperado y que sus factores estén sustentados en la alerta. Si no supera esas comprobaciones, la alerta queda como análisis fallido, sin veredicto.
 
-Usted puede confirmar o corregir la clasificación; la revisión no es obligatoria. **SENTRIA no descarta alertas por su cuenta:** todas las alertas registradas en SENTRIA siguen visibles en alguna cola. Las que el comando de ingesta encuentra y la política no admite solo se cuentan: no se registran, así que no aparecen en ninguna cola. La acción web «Actualizar» sí las registra como omitidas.
+Usted puede confirmar o corregir la clasificación; la revisión no es obligatoria. **SENTRIA no descarta alertas por su cuenta:** todas las alertas registradas en SENTRIA siguen visibles en alguna cola. Las que los comandos de ingesta encuentran y la política no admite solo se cuentan: no se registran, así que no aparecen en ninguna cola. La acción web «Actualizar» sí las registra como omitidas. Si el administrador activó la ingesta continua, las alertas nuevas de ese equipo aparecen solas cada pocos minutos.
 
 ## 2. Iniciar sesión
 
@@ -159,6 +161,8 @@ Las copias públicas de U-2 y U-3 ocultan los nombres de las cuentas, el nombre 
 | Lo que ve | Qué significa | Qué hacer |
 |---|---|---|
 | Una alerta en «Pendientes y fallidas» con fallo | El modelo no respondió, se agotó la cuota o la respuesta no superó las comprobaciones | Reintentar más tarde o revisarla a mano. El detalle dice el motivo |
-| Una alerta en «Omitidas por política» | Nivel menor que 7, equipo sin perfil o ruido operativo excluido (por defecto, alertas que traen a la vez los grupos `dpkg` y `config_changed`) | Si debería analizarse, pedir al administrador que asocie el equipo |
+| Una alerta en «Omitidas por política» | Nivel menor que el mínimo (5 en esta versión), equipo sin perfil o ruido operativo excluido (por defecto, alertas que traen a la vez los grupos `dpkg` y `config_changed`) | Si debería analizarse, pedir al administrador que asocie el equipo |
 | «No se pudo consultar el indexador» al pulsar Actualizar | Wazuh no responde o su certificado cambió | Avisar al administrador |
 | No ve un botón | Su rol no lo permite | Pedir el cambio al administrador |
+| «Otra vía está analizando esta alerta» | La ingesta continua u otra persona la está analizando en ese momento | Revisar el resultado en unos segundos; no se reintentó |
+| «Reintento no disponible: una llamada anterior pudo ejecutarse y no quedó cerrada» | Un análisis anterior se interrumpió durante la llamada al modelo | Avisar al administrador: debe revisarla antes de que se pueda reenviar |

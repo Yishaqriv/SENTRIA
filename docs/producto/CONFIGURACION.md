@@ -1,4 +1,6 @@
-# Configuración de SENTRIA (versión `6d8c6b5`)
+# Configuración de SENTRIA
+
+Describe el código de `6d8c6b5` con los cambios de noviembre de 2026 (ver [`CHANGELOG.md`](../../CHANGELOG.md)).
 
 
 SENTRIA lee su configuración de variables de entorno. Este documento lista **todas las variables que lee el código**, cuál es su valor si faltan y si aparecen en `.env.example`. No contiene ningún valor real.
@@ -12,7 +14,7 @@ SENTRIA lee su configuración de variables de entorno. Este documento lista **to
 
 `sentria_backend.py` vuelve a cargar el mismo archivo, esta vez **con prioridad** sobre las variables del proceso (`override=True`). Por eso conviene no definir una misma variable con valores distintos en el entorno y en el archivo.
 
-`SENTRIA_ENV_FILE` elige el archivo, así que **se define en el entorno del proceso** (la unidad del servicio, la orden de Docker o la terminal), no dentro del propio archivo. La configuración de la suite (`settings_ci.py`) la ignora a propósito.
+`SENTRIA_ENV_FILE` elige el archivo, así que **se define en el entorno del proceso** (la unidad del servicio, la orden de Docker o la terminal), no dentro del propio archivo. La configuración de la suite (`settings_ci.py`) no usa el valor heredado: la apunta a un archivo vacío propio (600, en una carpeta temporal 700 que se borra al terminar), de modo que ni `settings.py` ni `sentria_backend.py` cargan el `.env` local, y retira del entorno las variables de credenciales, destinos y autorizaciones. Lo comprueba `sentria_project/tests_aislamiento_ci.py`.
 
 ## 2. Variables de la aplicación
 
@@ -28,7 +30,7 @@ SENTRIA lee su configuración de variables de entorno. Este documento lista **to
 | `WAZUH_TLS_SHA256` | `sentria_backend.py` | Vacía: SENTRIA no consulta el indexador ni envía credenciales | Sí |
 | `WAZUH_INDEX_NAME` | `sentria_backend.py` | `wazuh-alerts-*` | Sí |
 | `GEMINI_API_KEY` | `dashboard/ia/proveedores.py` | Vacía: el modelo base no puede consultarse | Sí |
-| `GEMINI_MODEL` | `proveedores.py`, `sentria_backend.py` | `models/gemini-3.5-flash` | Sí |
+| `GEMINI_MODEL` | `proveedores.py`, `sentria_backend.py` | `models/gemini-3.5-flash`. Es el modelo **solicitado**; la respuesta puede informar otra versión, que se guarda aparte como modelo informado | Sí |
 | `IA_PROVIDER` | `proveedores.py` | `gemini_developer` (modelo base) | Sí |
 | `IA_VERTEX_HABILITADO` | `proveedores.py` | Desactivado: solo `1` lo habilita | Sí |
 | `GEMINI_TUNED_ENDPOINT` | `proveedores.py` | Vacío | Sí |
@@ -38,6 +40,7 @@ SENTRIA lee su configuración de variables de entorno. Este documento lista **to
 | **`SENTRIA_ENV_FILE`** | `sentria_project/env_utils.py` | Se usa `.env` del proyecto | Solo como comentario: se define en el entorno del proceso |
 | **`SENTRIA_MODO_REVISION`** | `settings.py`, `dashboard/lotes.py` | `DOBLE`: quien completa un candidato del conjunto de ajuste no puede aprobarlo. `REVISOR_UNICO_LOTE` permite que un único revisor apruebe, solo aceptando un lote sellado. Cualquier otro valor equivale a `DOBLE` | Sí |
 | **`IA_AGENTES_BLOQUEADOS`** | `settings.py`, `dashboard/ia/resolver.py` | Lista vacía. `agent.id` de Wazuh, separados por comas, que no se pueden asociar a un activo ni enviar al modelo | Sí |
+| **`SENTRIA_EXCLUSION_DIR`** | `dashboard/ia/exclusion.py` | Un directorio temporal `<tmp>/sentria-exclusion-<uid>`, solo apto para desarrollo. Con la variable: ruta absoluta de un directorio privado (700, del mismo usuario, sin enlaces) y persistente, **el mismo** para el dashboard y para `ingesta_continua`. `ingesta_continua --confirmar` y `revisar_incierto` se niegan a ejecutar sin ella | Sí |
 | **`SENTRIA_MIGRAR_AL_ARRANCAR`** | `docker-entrypoint.sh` | `0`: la imagen no aplica migraciones al arrancar. Con `1`, ejecuta `migrate` antes de `check`. Pensada para pruebas con una base temporal; contra una base real, las migraciones se aplican a mano y después de un respaldo | Sí |
 
 ## 3. Líneas de `.env.example` para estas variables
@@ -60,7 +63,19 @@ IA_AGENTES_BLOQUEADOS=
 # Solo imagen Docker: 1 aplica las migraciones al arrancar (pruebas con base temporal).
 # Contra una base real, dejar 0 y migrar a mano después de un respaldo.
 SENTRIA_MIGRAR_AL_ARRANCAR=0
+
+# Exclusión común por alerta entre el dashboard y la ingesta continua (dashboard/ia/exclusion.py).
+# Ruta ABSOLUTA de un directorio privado (700, del mismo usuario), persistente y IGUAL para el dashboard
+# y para el comando ingesta_continua. Sin ella, el dashboard usa un directorio temporal (solo desarrollo)
+# e ingesta_continua --confirmar y revisar_incierto se niegan a ejecutar.
+SENTRIA_EXCLUSION_DIR=
+
+# Gráficas de «Comparación de IA» (Matplotlib, opcional): MPLCONFIGDIR es la variable estándar de
+# Matplotlib para su caché. Se define en el entorno del proceso, apuntando a un directorio privado
+# escribible; no hace falta en este archivo.
 ```
+
+**Política de elegibilidad.** No es una variable de entorno: se define con `IA_POLITICA` en `sentria_project/settings.py`. Los valores por defecto están en `dashboard/ia/politica.py` (nivel mínimo 7); en esta versión `settings.py` fija `IA_POLITICA = {"nivel_minimo": 5}` y deja el resto por defecto.
 
 ## 4. Variables de operación que no van en `.env.example`
 
@@ -71,10 +86,11 @@ No configuran la aplicación: autorizan una operación concreta o sirven para un
 | `SENTRIA_ACEPTAR_LOTE_AUTORIZADO` | comando `aceptar_lote` | Autoriza escribir la aceptación de un lote |
 | `SENTRIA_CONGELAR_AUTORIZADO` | comando `congelar_entradas` | Autoriza escribir los sellos de entrada |
 | `SENTRIA_SQLITE_PRUEBA` | `settings_prueba_docker.py` | Ruta de la base SQLite de la prueba aislada de la imagen |
+| `MPLCONFIGDIR` | Matplotlib (gráficas de «Comparación de IA») | Variable estándar de Matplotlib: directorio de caché escribible y privado para el proceso del dashboard |
 
 ## 5. Lo que se usó en el laboratorio
 
-- **Máquina virtual:** un lanzador privado armaba un entorno mínimo con `SENTRIA_ENV_FILE`, `WAZUH_TLS_SHA256`, `DJANGO_ALLOWED_HOSTS` y `SENTRIA_MODO_REVISION`, y el resto venía del archivo de entorno. La aplicación se sirvió con `runserver`. Los registros conservados no permiten establecer el valor de `DJANGO_DEBUG` durante las pruebas.
+- **Máquina virtual:** un lanzador privado armaba un entorno mínimo con `SENTRIA_ENV_FILE`, `WAZUH_TLS_SHA256`, `DJANGO_ALLOWED_HOSTS` y `SENTRIA_MODO_REVISION`, y el resto venía del archivo de entorno. Desde noviembre de 2026 añade `SENTRIA_EXCLUSION_DIR` (el mismo directorio para el dashboard y la ingesta continua) y `MPLCONFIGDIR`, y aporta los identificadores del agente y del activo de la ingesta continua como argumentos del comando. La aplicación se sirvió con `runserver`. Los registros conservados no permiten establecer el valor de `DJANGO_DEBUG` durante las pruebas.
 - **Docker:** la imagen fija `DJANGO_DEBUG=False` y usa Gunicorn. La configuración se montó en volúmenes de solo lectura.
 
 Los valores reales no se documentan aquí ni en el repositorio.

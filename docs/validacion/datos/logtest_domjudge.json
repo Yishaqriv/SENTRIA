@@ -1,0 +1,25 @@
+{
+ "que": "wazuh-logtest sobre registros históricos de acceso web (domjudge (nginx)) convertidos al esquema web 1",
+ "fecha_informe_utc": "2026-11-14T06:32:29.411120+00:00",
+ "ejecutado_por": "el equipo, con sudo, en el servidor de Wazuh del laboratorio",
+ "probados": 54,
+ "aprobados": 54,
+ "fallidos": 0,
+ "por_regla": {
+  "119602": 34,
+  "119603": 20
+ },
+ "nivel_esperado": 5,
+ "decodificador_esperado": "json",
+ "configuracion_y_reglas_sin_cambios": true,
+ "reglas_sha256": "7b5f2b477fb899f56a1845f4ff9fe612d107538aa35e84db81aebd0b6faf212c",
+ "trazabilidad_privada": {
+  "informe_sha256": "b1d14e85bb40bdb800d0e64b0f71a6c799cf9540503b719d0a686e361d7698a2",
+  "validador_sha256": "922c484808fdcfba32da13c953072e80c12ec13f75d5dd72e13bd39c07a1dcd3",
+  "muestra_sha256": "947c417addc72e63c9416e44f8f7cbf3f341ef351e1a8d204acc2c1c85a9c555"
+ },
+ "llamadas_ia": 0,
+ "eventos_ingeridos": 0,
+ "alcance": "confirma solo regla, nivel y decodificador de Wazuh para cada registro; no valida el contexto del activo en la fecha histórica",
+ "no_incluye": "las líneas de registro, sus números ni los avisos individuales de logtest"
+}

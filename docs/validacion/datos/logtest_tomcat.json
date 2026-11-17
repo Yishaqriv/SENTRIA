@@ -1,0 +1,25 @@
+{
+ "que": "wazuh-logtest sobre registros históricos de acceso web (tomcat) convertidos al esquema web 1",
+ "fecha_informe_utc": "2026-11-14T07:01:16.876532+00:00",
+ "ejecutado_por": "el equipo, con sudo, en el servidor de Wazuh del laboratorio",
+ "probados": 60,
+ "aprobados": 60,
+ "fallidos": 0,
+ "por_regla": {
+  "119602": 40,
+  "119603": 20
+ },
+ "nivel_esperado": 5,
+ "decodificador_esperado": "json",
+ "configuracion_y_reglas_sin_cambios": true,
+ "reglas_sha256": "7b5f2b477fb899f56a1845f4ff9fe612d107538aa35e84db81aebd0b6faf212c",
+ "trazabilidad_privada": {
+  "informe_sha256": "548239fc012a1406a6fa42f95b9e97c6e9c334f46f68d6e543f4aaa95b387d8b",
+  "validador_sha256": "342bceae78bfbd2c8315b166cd69155e0b1c31011f87220569b0d851f5c86285",
+  "muestra_sha256": "90d802ab18cace648a8687b3ad8df41dcb8f4e1171ac8855d6b0b65c273fc6ea"
+ },
+ "llamadas_ia": 0,
+ "eventos_ingeridos": 0,
+ "alcance": "confirma solo regla, nivel y decodificador de Wazuh para cada registro; no valida el contexto del activo en la fecha histórica",
+ "no_incluye": "las líneas de registro, sus números ni los avisos individuales de logtest"
+}
