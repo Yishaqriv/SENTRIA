@@ -25,3 +25,22 @@ fim_*.json
 !.env.example
 *.env
 seguimiento-local/
+
+# Material privado del equipo y de asistentes: nunca se versiona.
+.claude/
+CLAUDE.md
+AGENTS.md
+# Estado y registros de la ingesta continua, marcas de exclusión, caché de Matplotlib y
+# registros de ejecuciones de comparación: viven fuera del repositorio; esto es una red de seguridad.
+estado_ingesta/
+exclusion_analisis/
+mplconfig/
+registro_resultados*.jsonl
+respuestas/
+# Exportaciones, volcados y paquetes de trabajo.
+*.sql
+*.sql.gz
+*.dump
+*.bak
+*.zip
+*.ova
